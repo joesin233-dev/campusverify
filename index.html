@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>CampusVerify — Verification Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== Header ===== -->
+  <header class="app-header">
+    <div class="seal" aria-hidden="true">
+      <span class="seal-ring"></span>
+      <span class="seal-mark">✓</span>
+    </div>
+    <div class="app-title">
+      <h1>CampusVerify</h1>
+      <p>Official record verification for licensed institutions</p>
+    </div>
+  </header>
+
+  <!-- ===== Content ===== -->
+  <main class="app-content">
+
+    <!-- HOME -->
+    <section class="page" id="page-home" data-page="home">
+      <div class="hero">
+        <p class="eyebrow">Before you pay, click, or reply</p>
+        <h2>Check it against what your institution has actually published.</h2>
+        <p class="hero-body">
+          Paste your institution's official website and CampusVerify checks it
+          live against their own approved pages — so you're not guessing alone.
+        </p>
+
+        <div class="hero-actions">
+          <button class="btn btn-primary" data-goto="verify">Verify something now</button>
+          <button class="btn btn-ghost" data-goto="report">Report a suspicious message</button>
+        </div>
+      </div>
+
+      <div class="card-grid">
+        <button class="tile" data-goto="verify">
+          <span class="tile-icon">🔎</span>
+          <span class="tile-title">Verify a contact</span>
+          <span class="tile-sub">Phone, email, or bank account</span>
+        </button>
+        <button class="tile" data-goto="info">
+          <span class="tile-icon">🏛️</span>
+          <span class="tile-title">Official information</span>
+          <span class="tile-sub">Live-crawled contacts &amp; banks</span>
+        </button>
+        <button class="tile" data-goto="report">
+          <span class="tile-icon">🚩</span>
+          <span class="tile-title">Report a scam</span>
+          <span class="tile-sub">Send it to your institution / ZICTA</span>
+        </button>
+        <button class="tile" data-goto="about">
+          <span class="tile-icon">ℹ️</span>
+          <span class="tile-title">About this tool</span>
+          <span class="tile-sub">What it can &amp; can't do</span>
+        </button>
+      </div>
+
+      <div class="impact-card" id="impact-card">
+        <span class="notice-tag">Impact so far</span>
+        <div class="impact-stats">
+          <div class="impact-stat">
+            <span class="impact-stat-value" id="impact-total">0</span>
+            <span class="impact-stat-label">Verifications performed</span>
+          </div>
+          <div class="impact-stat">
+            <span class="impact-stat-value" id="impact-flagged">0</span>
+            <span class="impact-stat-label">Scam indicators flagged</span>
+          </div>
+          <div class="impact-stat">
+            <span class="impact-stat-value" id="impact-reports">0</span>
+            <span class="impact-stat-label">Reports prepared</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="notice notice-amber">
+        <strong>Not an official system of any listed institution.</strong>
+        CampusVerify is independent. It only checks pages your institution
+        has already made public — it can't detect every scam, and always
+        confirm directly if unsure.
+      </div>
+
+      <p class="developer-credit">Built by Joe Sin</p>
+    </section>
+
+    <!-- VERIFY -->
+    <section class="page" id="page-verify" data-page="verify" hidden>
+      <h2 class="page-title">Verify a contact</h2>
+
+      <!-- STEP 1: identify institution from its website -->
+      <div id="step-identify">
+        <p class="page-lead">Step 1 — Enter your institution's official website</p>
+        <form class="check-form" id="identify-form">
+          <input class="field-input" id="identify-url-input" type="text" inputmode="url" placeholder="e.g. https://www.unilus.ac.zm" autocomplete="off">
+          <button class="btn btn-primary btn-block" type="submit">Check website</button>
+        </form>
+        <p class="field-warning" id="identify-error" hidden></p>
+      </div>
+
+      <!-- Institution verification hub -->
+      <div class="notice notice-soft institution-hub" id="institution-identified-card" hidden>
+        <span class="notice-tag" id="institution-status-badge">Institution identified</span>
+        <p class="institution-hub-name" id="institution-identified-name"></p>
+        <p class="institution-hub-domain">Official website: <span id="institution-identified-domain"></span></p>
+        <div class="institution-hub-actions">
+          <a class="btn btn-ghost" id="visit-official-site-btn" href="#" target="_blank" rel="noopener">Visit Official Website</a>
+          <button class="btn btn-primary" type="button" id="verify-something-now-btn">Verify Something Now</button>
+        </div>
+        <button class="btn btn-ghost btn-small" type="button" id="change-institution-btn">Not your institution? Change</button>
+      </div>
+
+      <!-- STEP 2: what to verify -->
+      <div id="step-choose-type" hidden>
+        <p class="page-lead">Step 2 — What do you want to verify?</p>
+        <div class="verify-type-grid">
+          <button class="tile verify-type-tile is-active" data-type="phone" type="button">
+            <span class="tile-icon">📱</span><span class="tile-title">Phone number</span>
+          </button>
+          <button class="tile verify-type-tile" data-type="email" type="button">
+            <span class="tile-icon">📧</span><span class="tile-title">Email address</span>
+          </button>
+          <button class="tile verify-type-tile" data-type="bank" type="button">
+            <span class="tile-icon">🏦</span><span class="tile-title">Bank/payment details</span>
+          </button>
+          <button class="tile verify-type-tile" data-type="link" type="button">
+            <span class="tile-icon">🔗</span><span class="tile-title">Website or link</span>
+          </button>
+          <button class="tile verify-type-tile" data-type="other" type="button">
+            <span class="tile-icon">📄</span><span class="tile-title">Other information</span>
+          </button>
+        </div>
+
+        <p class="crawl-status" id="crawl-status"></p>
+
+        <form class="check-form">
+          <label class="field-label" for="verify-input">Phone number</label>
+          <input class="field-input" id="verify-input" type="text" inputmode="tel" placeholder="e.g. 0972 832 671" autocomplete="off">
+
+          <label class="field-label" for="verify-message-input" id="verify-message-label" hidden>Paste the message or information to check</label>
+          <textarea class="field-input field-textarea" id="verify-message-input" rows="5" placeholder="Paste the SMS, WhatsApp, or email message here" hidden></textarea>
+
+          <button class="btn btn-primary btn-block" type="submit">Check</button>
+        </form>
+
+        <p class="field-warning" id="verify-empty-warning" hidden>Please enter something to check first.</p>
+
+        <div class="result-card" id="result-card" hidden></div>
+        <div class="evidence-card" id="evidence-card" hidden></div>
+
+        <div class="notice notice-soft" id="verify-footnote">
+          <span class="notice-tag">What this checks</span>
+          This crawls your identified institution's approved official pages live,
+          and compares your entry against what's currently published plus
+          documented scam-message patterns. It can't detect every scam — a
+          result here isn't automatic proof of fraud or safety. Always confirm
+          directly if you're unsure.
+        </div>
+      </div>
+    </section>
+
+    <!-- OFFICIAL INFORMATION -->
+    <section class="page" id="page-info" data-page="info" hidden>
+      <h2 class="page-title">Official information</h2>
+      <p class="page-lead">Live-crawled from your institution's own official pages — so you don't have to hunt across their site.</p>
+
+      <div class="notice notice-amber" id="info-no-institution">
+        Identify your institution on the Verify page first — enter its
+        official website there, then come back here.
+        <button class="btn btn-ghost btn-small" data-goto="verify" type="button">Go to Verify</button>
+      </div>
+
+      <div id="info-body" hidden>
+        <p class="crawl-status" id="info-institution-name"></p>
+
+        <div class="search-box">
+          <span class="search-icon" aria-hidden="true">🔎</span>
+          <input class="search-input" id="info-search" type="text" placeholder="Search phone, email, or bank" autocomplete="off">
+        </div>
+
+        <div class="filter-chips" role="tablist" aria-label="Information category">
+          <button class="chip is-active" data-filter="all" type="button">All</button>
+          <button class="chip" data-filter="contact" type="button">Contacts</button>
+          <button class="chip" data-filter="bank" type="button">Banks</button>
+          <button class="chip" data-filter="link" type="button">Websites</button>
+        </div>
+
+        <div id="info-list" class="info-list"></div>
+
+        <p class="empty-state" id="info-empty" hidden>No matching entries. Try a different search term.</p>
+      </div>
+    </section>
+
+    <!-- REPORT -->
+    <section class="page" id="page-report" data-page="report" hidden>
+      <h2 class="page-title">Report Centre</h2>
+      <p class="page-lead">Prepare a clear report before contacting your institution or ZICTA. Nothing here is submitted automatically — you copy and send it yourself.</p>
+
+      <form class="check-form" id="report-form">
+        <label class="field-label" for="report-description">What happened?</label>
+        <textarea class="field-input field-textarea" id="report-description" rows="4" placeholder="Describe or paste the suspicious message here"></textarea>
+
+        <label class="field-label" for="report-phone">Phone number involved (optional)</label>
+        <input class="field-input" id="report-phone" type="text" inputmode="tel" placeholder="e.g. 09XXXXXXXX" autocomplete="off">
+
+        <label class="field-label" for="report-email">Email involved (optional)</label>
+        <input class="field-input" id="report-email" type="text" inputmode="email" placeholder="e.g. name@example.com" autocomplete="off">
+
+        <label class="field-label" for="report-bank">Bank account involved (optional)</label>
+        <input class="field-input" id="report-bank" type="text" placeholder="e.g. account number" autocomplete="off">
+
+        <button class="btn btn-primary btn-block" type="submit">Generate report</button>
+      </form>
+
+      <p class="field-warning" id="report-empty-warning" hidden>Please fill in at least the description or one contact detail before generating a report.</p>
+
+      <div class="report-summary" id="report-summary" hidden></div>
+
+      <div class="report-actions" id="report-actions" hidden>
+        <button class="btn btn-ghost" type="button" id="report-copy-btn">Copy report</button>
+        <button class="btn btn-ghost" type="button" id="report-clear-btn">Clear form</button>
+      </div>
+
+      <div class="notice notice-soft">
+        <span class="notice-tag">Privacy</span>
+        This form doesn't ask for your name or NRC number, and nothing you
+        type is sent anywhere automatically — it stays on this screen
+        until you copy it yourself.
+      </div>
+
+      <h3 class="section-subtitle">Official reporting channels</h3>
+      <div id="report-channels" class="info-section-group"></div>
+    </section>
+
+    <!-- ABOUT -->
+    <section class="page" id="page-about" data-page="about" hidden>
+      <h2 class="page-title">About this tool</h2>
+
+      <div class="about-block">
+        <h3>What it is</h3>
+        <p>CampusVerify is an independent verification assistant. For each
+        licensed institution, it crawls their own already-public pages live
+        and compares numbers, accounts, and messages against what's
+        actually published — nothing more.</p>
+      </div>
+
+      <div class="about-block">
+        <h3>What it isn't</h3>
+        <ul class="about-list">
+          <li>Not an official system of, or partnership with, any listed institution.</li>
+          <li>Not a guarantee that every scam will be caught.</li>
+          <li>Not connected to any institution's private student records or systems.</li>
+        </ul>
+      </div>
+
+      <div class="about-block">
+        <h3>Where the information comes from</h3>
+        <p>Every contact and account shown is crawled live from that
+        institution's own approved public pages at the moment you check —
+        with the source page and check time shown next to it.</p>
+      </div>
+
+      <div class="about-block">
+        <h3>How institutions get added</h3>
+        <p>Only institutions on CampusVerify's licensed/pilot list can be
+        checked. This keeps every result tied to pages we've verified are
+        genuinely official, rather than opening the tool to any link.</p>
+      </div>
+
+      <div class="notice notice-amber">
+        If anything here looks outdated, always confirm directly with your
+        institution using the contacts on their official website.
+      </div>
+
+      <p class="developer-credit">Designed and developed by Joseph Chishimba (Joe Sin)</p>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="page" id="page-settings" data-page="settings" hidden>
+      <h2 class="page-title">Settings</h2>
+
+      <div class="about-block">
+        <h3>About CampusVerify</h3>
+        <p id="settings-app-description">An independent verification assistant that crawls each licensed institution's own published information live.</p>
+      </div>
+
+      <div class="settings-meta">
+        <div class="settings-meta-row">
+          <span class="settings-meta-label">App version</span>
+          <span class="settings-meta-value" id="settings-version">2.0.0</span>
+        </div>
+        <div class="settings-meta-row">
+          <span class="settings-meta-label">Licensed institutions</span>
+          <span class="settings-meta-value" id="settings-institution-count"></span>
+        </div>
+        <div class="settings-meta-row">
+          <span class="settings-meta-label">Developer</span>
+          <span class="settings-meta-value" id="settings-developer">Joseph Chishimba (Joe Sin)</span>
+        </div>
+      </div>
+
+      <div class="about-block">
+        <h3>Evidence source</h3>
+        <p id="settings-evidence-source">Live crawl of each institution's approved official pages, refreshed every time you check.</p>
+      </div>
+
+      <div class="about-block">
+        <h3>Privacy notice</h3>
+        <p id="settings-privacy-notice">CampusVerify does not collect your name, NRC number, or student number. The crawler runs on the server and only returns a short result — never the full page — to your device. The Report Centre does not submit anything automatically — you copy and send it yourself.</p>
+      </div>
+
+      <div class="notice notice-amber" id="settings-disclaimer">CampusVerify is an independent tool and is not an official system of, or partnership with, any listed institution.</div>
+
+      <h3 class="section-subtitle">Preferences</h3>
+      <p class="page-lead">These only change how the app looks on this device — nothing is sent anywhere.</p>
+
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Dark Mode</div>
+          <div class="toggle-sub">Switch to a dark colour scheme</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="setting-dark-mode">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Large Text</div>
+          <div class="toggle-sub">Increase text size across the app</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="setting-large-text">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Reduced Motion</div>
+          <div class="toggle-sub">Turn off animations and smooth scrolling</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="setting-reduced-motion">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <button class="btn btn-ghost btn-block" id="settings-reset-btn" type="button">Reset settings</button>
+
+      <div class="notice notice-soft" id="settings-reset-confirm" hidden>
+        Preferences reset to default.
+      </div>
+    </section>
+
+  </main>
+
+  <p class="app-footer-credit">CampusVerify — developed by Joseph Chishimba (Joe Sin)</p>
+
+  <!-- ===== Bottom Navigation ===== -->
+  <nav class="tab-bar" aria-label="Main navigation">
+    <button class="tab is-active" data-goto="home">
+      <span class="tab-icon">🏠</span><span class="tab-label">Home</span>
+    </button>
+    <button class="tab" data-goto="verify">
+      <span class="tab-icon">🔎</span><span class="tab-label">Verify</span>
+    </button>
+    <button class="tab" data-goto="info">
+      <span class="tab-icon">🏛️</span><span class="tab-label">Info</span>
+    </button>
+    <button class="tab" data-goto="report">
+      <span class="tab-icon">🚩</span><span class="tab-label">Report</span>
+    </button>
+    <button class="tab" data-goto="about">
+      <span class="tab-icon">ℹ️</span><span class="tab-label">About</span>
+    </button>
+    <button class="tab" data-goto="settings">
+      <span class="tab-icon">⚙️</span><span class="tab-label">Settings</span>
+    </button>
+  </nav>
+
+<script src="institutions.js"></script>
+<script src="patterns.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
