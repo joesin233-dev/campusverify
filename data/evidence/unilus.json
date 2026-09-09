@@ -1,4 +1,242 @@
 {
   "institutionId": "unilus",
-  "evidence": []
+  "institutionName": "University of Lusaka",
+  "evidence": [
+    {
+      "id": "unilus-official-name",
+      "type": "institution_identity",
+      "field": "official_name",
+      "value": "University of Lusaka",
+      "source": {
+        "title": "University of Lusaka Official Website",
+        "url": "https://www.unilus.ac.zm/"
+      }
+    },
+    {
+      "id": "unilus-official-domain",
+      "type": "institution_identity",
+      "field": "official_domain",
+      "value": "unilus.ac.zm",
+      "source": {
+        "title": "University of Lusaka Official Website",
+        "url": "https://www.unilus.ac.zm/"
+      }
+    },
+    {
+      "id": "unilus-info-email",
+      "type": "contact",
+      "field": "general_email",
+      "value": "info@unilus.ac.zm",
+      "source": {
+        "title": "Contact Us - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/contact-us/"
+      }
+    },
+    {
+      "id": "unilus-general-phone",
+      "type": "contact",
+      "field": "general_phone",
+      "value": "0971263550",
+      "source": {
+        "title": "Contact Us - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/contact-us/"
+      }
+    },
+    {
+      "id": "unilus-admissions-phone-1",
+      "type": "contact",
+      "field": "admissions_phone",
+      "value": "+260976075850",
+      "source": {
+        "title": "2025 UNILUS Application Form",
+        "url": "https://www.unilus.ac.zm/downloads/2025%20UNILUS%20Application%20Form%20new.pdf"
+      }
+    },
+    {
+      "id": "unilus-admissions-phone-2",
+      "type": "contact",
+      "field": "admissions_phone",
+      "value": "+260953688533",
+      "source": {
+        "title": "2025 UNILUS Application Form",
+        "url": "https://www.unilus.ac.zm/downloads/2025%20UNILUS%20Application%20Form%20new.pdf"
+      }
+    },
+    {
+      "id": "unilus-admissions-email",
+      "type": "contact",
+      "field": "admissions_email",
+      "value": "admissions@unilus.ac.zm",
+      "source": {
+        "title": "2025 UNILUS Application Form",
+        "url": "https://www.unilus.ac.zm/downloads/2025%20UNILUS%20Application%20Form%20new.pdf"
+      }
+    },
+    {
+      "id": "unilus-silverest-address",
+      "type": "campus",
+      "field": "campus_address",
+      "value": "Plot No. 23072/M, Silverest, Chongwe",
+      "source": {
+        "title": "Contact Us - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/contact-us/"
+      }
+    },
+    {
+      "id": "unilus-massmedia-address",
+      "type": "campus",
+      "field": "campus_address",
+      "value": "Plot No. 37413, Alick Nkhata Road, Mass Media",
+      "source": {
+        "title": "Contact Us - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/contact-us/"
+      }
+    },
+    {
+      "id": "unilus-leopards-hill-address",
+      "type": "campus",
+      "field": "campus_address",
+      "value": "Plot No. 17986, Leopards Hill Road",
+      "source": {
+        "title": "Contact Us - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/contact-us/"
+      }
+    },
+    {
+      "id": "unilus-indo-account",
+      "type": "payment",
+      "field": "bank_account",
+      "bank": "Indo-Zambia Bank",
+      "branch": "Lusaka Main",
+      "account_name": "University of Lusaka",
+      "account_number": "0012030001876",
+      "swift_code": "INZAZMLX",
+      "source": {
+        "title": "Fees and Tuition - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/fees/"
+      }
+    },
+    {
+      "id": "unilus-access-account",
+      "type": "payment",
+      "field": "bank_account",
+      "bank": "Access Bank Zambia",
+      "branch": "Cairo Road",
+      "branch_code": "350001",
+      "account_name": "University of Lusaka",
+      "account_number": "0010221013161",
+      "swift_code": "AZAMZMLU",
+      "source": {
+        "title": "Fees and Tuition - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/fees/"
+      }
+    },
+    {
+      "id": "unilus-absa-usd-account",
+      "type": "payment",
+      "field": "bank_account",
+      "bank": "Absa Bank",
+      "branch": "Head Office",
+      "branch_code": "020001",
+      "account_name": "University of Lusaka",
+      "account_number": "1071643",
+      "swift_code": "BARCZMLX",
+      "currency": "USD",
+      "audience": "international_students",
+      "source": {
+        "title": "International Student Fees - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/international-student-fees/"
+      }
+    },
+    {
+      "id": "unilus-zanaco-payment",
+      "type": "payment",
+      "field": "payment_service",
+      "bank": "Zanaco",
+      "service": "Bill Master",
+      "university_identifier": "6038 - UNILUS",
+      "source": {
+        "title": "Registration Notice - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/registation-notice/"
+      }
+    },
+    {
+      "id": "unilus-airtel-payment",
+      "type": "payment",
+      "field": "mobile_payment",
+      "provider": "Airtel Money",
+      "ussd": "*115#",
+      "service": "University of Lusaka",
+      "source": {
+        "title": "Local & SADC Fees - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/local-sadc-fees/"
+      }
+    },
+    {
+      "id": "unilus-online-payment",
+      "type": "payment",
+      "field": "online_payment",
+      "portal": "https://portal.unilus.ac.zm/",
+      "method": "Visa card",
+      "source": {
+        "title": "Online Registration - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/online-registration-2-2/"
+      }
+    },
+    {
+      "id": "unilus-payment-student-number",
+      "type": "payment_rule",
+      "field": "payment_reference",
+      "value": "Students are instructed to use their student number when making payments.",
+      "source": {
+        "title": "Fees and Tuition - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/fees/"
+      }
+    },
+    {
+      "id": "unilus-50-percent-registration",
+      "type": "registration",
+      "field": "minimum_tuition_deposit",
+      "value": "50%",
+      "description": "A minimum deposit of 50% of tuition fees is required for semester registration.",
+      "source": {
+        "title": "Registration Notice - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/elementor-23004/"
+      }
+    },
+    {
+      "id": "unilus-application-payment",
+      "type": "admissions",
+      "field": "application_payment",
+      "amount": 200,
+      "currency": "ZMW",
+      "bank": "Indo Zambia Bank",
+      "account_number": "0012030001876",
+      "source": {
+        "title": "Online Application Guide - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/apply-online/"
+      }
+    },
+    {
+      "id": "unilus-application-email",
+      "type": "admissions",
+      "field": "application_contact",
+      "email": "info@unilus.ac.zm",
+      "phone": "+260971263550",
+      "source": {
+        "title": "Online Application Guide - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/apply-online/"
+      }
+    },
+    {
+      "id": "unilus-zaqa-requirement",
+      "type": "admissions",
+      "field": "qualification_verification",
+      "value": "Academic results must be verified by the Zambia Qualifications Authority (ZAQA).",
+      "source": {
+        "title": "Online Application Guide - University of Lusaka",
+        "url": "https://web.unilus.ac.zm/apply-online/"
+      }
+    }
+  ]
 }
