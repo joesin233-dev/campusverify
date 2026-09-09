@@ -129,6 +129,36 @@
     pilot: "✓ CampusVerify Pilot Institution"
   };
 
+  /*
+   * Returns the URL the crawler will actually start from for this
+   * institution: the explicit "homepage" override if one is configured
+   * (used when the bare domain has no working site / a dead cert), or
+   * else "https://" + domain + "/".
+   *
+   * IMPORTANT: any UI element that links a student to the institution's
+   * live website (e.g. "Visit Official Website") must use THIS function,
+   * not inst.domain directly — otherwise the button can send students to
+   * a domain that doesn't actually work, even when the crawler itself is
+   * correctly using the working address behind the scenes.
+   */
+  function getOfficialSiteUrl(inst) {
+    if (!inst) {
+      return null;
+    }
+
+    if (inst.homepage) {
+      return inst.homepage;
+    }
+
+    if (!inst.domain) {
+      return null;
+    }
+
+    return /^https?:\/\//i.test(inst.domain)
+      ? inst.domain
+      : "https://" + inst.domain + "/";
+  }
+
   function getCurrentInstitution() {
     if (!currentInstitutionId) {
       return null;
@@ -160,14 +190,17 @@
         inst.domain || "";
     }
 
-    if (visitSiteBtn && inst.domain) {
-      visitSiteBtn.href =
-        /^https?:\/\//i.test(inst.domain)
-          ? inst.domain
-          : "https://" + inst.domain;
+    if (visitSiteBtn) {
+      var officialSiteUrl =
+        getOfficialSiteUrl(inst);
 
-      visitSiteBtn.target = "_blank";
-      visitSiteBtn.rel = "noopener";
+      if (officialSiteUrl) {
+        visitSiteBtn.href =
+          officialSiteUrl;
+
+        visitSiteBtn.target = "_blank";
+        visitSiteBtn.rel = "noopener";
+      }
     }
 
     if (statusBadge) {
@@ -396,10 +429,12 @@
           : "",
 
       officialUrl:
-        institution && institution.domain
-          ? "https://" +
-            institution.domain +
-            "/"
+        institution
+          ? (
+              getOfficialSiteUrl(
+                institution
+              ) || ""
+            )
           : "",
 
       items: {
@@ -2666,10 +2701,13 @@
 
       "Official website: " +
         (
-          inst &&
-          inst.domain
-            ? "https://" +
-              inst.domain
+          inst
+            ? (
+                getOfficialSiteUrl(
+                  inst
+                ) ||
+                "Not provided"
+              )
             : "Not provided"
         ),
 
