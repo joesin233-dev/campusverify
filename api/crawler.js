@@ -56,6 +56,8 @@ const {
   extractPaymentInstructions
 } = require("../patterns.js");
 
+const pdfParse = require("pdf-parse");
+
 
 /* =========================================================================
    SETTINGS
@@ -1019,21 +1021,20 @@ function processHtmlPage(
 
 
 /* =========================================================================
-   BASIC DOCUMENT TEXT EXTRACTION
+   BASIC DOCUMENT TEXT EXTRACTION (FALLBACK ONLY)
    ========================================================================= */
 
 /*
  * NOTE:
  *
- * This function is intentionally conservative.
+ * This function is intentionally conservative and is now used ONLY as a
+ * fallback when real PDF parsing (pdf-parse) fails or the document isn't
+ * a PDF at all (e.g. .doc/.txt).
  *
- * It is NOT a complete PDF parser.
- *
- * The crawler can discover PDFs and inspect text fragments that are stored
- * directly inside the file, but scanned/image-only PDFs or heavily compressed
- * PDFs may require a real PDF parsing/OCR dependency.
- *
- * We keep this fallback because it requires no additional package.
+ * It is NOT a complete PDF parser. Most real-world PDFs compress their
+ * text streams (FlateDecode), so this raw-bytes approach usually finds
+ * nothing useful on an actual PDF — that's why pdf-parse is used first
+ * for PDFs, and this only catches the leftover edge cases.
  */
 function extractPossibleDocumentText(
   buffer
@@ -1087,17 +1088,36 @@ function extractPossibleDocumentText(
 
 /* =========================================================================
    PROCESS DOCUMENT
+   -----------------------------------------------------------------------
+   Now async: real PDFs go through pdf-parse first (handles compressed
+   text streams properly). If that fails for any reason, or the file
+   isn't actually a PDF, we fall back to the old raw-bytes scan so
+   .doc/.txt/.csv documents still get *something* extracted.
    ========================================================================= */
 
-function processDocument(
+async function processDocument(
   buffer,
   pageUrl,
-  itemLists
+  itemLists,
+  isPdf
 ) {
-  var text =
-    extractPossibleDocumentText(
-      buffer
-    );
+  var text;
+
+  if (isPdf) {
+    try {
+      var parsed = await pdfParse(buffer);
+      text = (parsed && parsed.text) || "";
+    } catch (err) {
+      console.error(
+        "CampusVerify PDF parse failed, falling back:",
+        pageUrl,
+        err && err.message
+      );
+      text = extractPossibleDocumentText(buffer);
+    }
+  } else {
+    text = extractPossibleDocumentText(buffer);
+  }
 
   if (!text) {
     return;
@@ -1244,10 +1264,11 @@ async function fetchPage(
         parsed.pathname
       )
     ) {
-      processDocument(
+      await processDocument(
         buffer,
         url,
-        itemLists
+        itemLists,
+        isPdfResponse(response, url)
       );
 
       pageStatus.push({
