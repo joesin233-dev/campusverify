@@ -519,10 +519,6 @@ h1, h2, h3 {
   color: var(--ink);
   white-space: pre-wrap;
   font-family: 'IBM Plex Mono', monospace;
-  /* Bug fix (Stage 7 QA): a long pasted message with no spaces (e.g. a
-     long URL) could otherwise overflow the card horizontally on a
-     narrow phone screen. white-space: pre-wrap alone doesn't break
-     unspaced runs — overflow-wrap does. */
   overflow-wrap: break-word;
   word-break: break-word;
 }
@@ -673,10 +669,6 @@ h1, h2, h3 {
 
 /* =========================================================================
    DARK MODE
-   Applied via <html class="dark-mode">. Because every component in this
-   stylesheet reads colours from the --tokens defined at :root, overriding
-   those same token names here re-themes the whole app without touching
-   a single component rule elsewhere in this file.
    ========================================================================= */
 html.dark-mode {
   --bg: #10201A;
@@ -696,10 +688,6 @@ html.dark-mode .field-input:disabled { background: #1C2C24; }
 
 /* =========================================================================
    LARGE TEXT
-   Applied via <html class="large-text">. This only sets the --text-scale
-   variable; see the top of this file where every font-size declaration
-   is written as calc(<px> * var(--text-scale, 1)) so this one variable
-   scales text consistently across the whole app.
    ========================================================================= */
 html.large-text {
   --text-scale: 1.18;
@@ -707,9 +695,6 @@ html.large-text {
 
 /* =========================================================================
    REDUCED MOTION
-   Applied via <html class="reduced-motion">. Disables CSS transitions,
-   the small "press" animation on buttons, and the tab-icon lift so
-   nothing moves or animates.
    ========================================================================= */
 html.reduced-motion,
 html.reduced-motion *,
@@ -792,7 +777,6 @@ html.reduced-motion .tab.is-active .tab-icon { transform: none; }
 
 .info-section-group { display: flex; flex-direction: column; gap: 10px; }
 
-/* Shared card shell for contacts / banks / links / warnings */
 .info-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -855,8 +839,6 @@ html.reduced-motion .tab.is-active .tab-icon { transform: none; }
   padding: 24px 12px;
 }
 
-/* Developer credit — About page line + app-wide footer (kept small and
-   muted so it reads as attribution, not a banner or advertisement). */
 .developer-credit {
   text-align: center;
   font-size: calc(12px * var(--text-scale, 1));
@@ -925,10 +907,6 @@ html.reduced-motion .tab.is-active .tab-icon { transform: none; }
   font-size: calc(10.5px * var(--text-scale, 1));
   font-weight: 600;
   font-family: 'Inter', sans-serif;
-  /* Bug fix (Stage 7 QA): with 6 tabs now in the bar, longer labels like
-     "Settings" could wrap onto a second line on narrow phones (<360px)
-     and break the tab bar's alignment. Keep each label to one line and
-     truncate gracefully instead. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -956,8 +934,7 @@ textarea:focus-visible {
 }
 
 /* =========================================================================
-   CampusVerify v2 additions — institution picker, live-crawl status,
-   neutral result state (message-check clean result)
+   CampusVerify v2 additions
    ========================================================================= */
 .crawl-status {
   font-size: 0.8rem;
@@ -989,8 +966,7 @@ textarea:focus-visible {
 }
 
 /* =========================================================================
-   CampusVerify v3 additions — institution verification hub, evidence card,
-   verify-type tile grid
+   CampusVerify v3 additions
    ========================================================================= */
 .institution-hub-name {
   font-family: 'Fraunces', serif;
@@ -1036,7 +1012,6 @@ textarea:focus-visible {
 
 .btn-small { padding: 6px 12px; font-size: 0.8rem; }
 
-/* v3.1 addition — per-item source link on Info page cards */
 .info-card-source-link {
   display: block;
   margin-top: 4px;
@@ -1047,3 +1022,21 @@ textarea:focus-visible {
   word-break: break-word;
 }
 .info-card-source-link:hover { text-decoration: underline; }
+
+/* =========================================================================
+   CampusVerify — Report Centre "institution's own contacts" copy buttons
+   ========================================================================= */
+.info-card-copy {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+.info-card-copy-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--forest-mid, #2D6A4F);
+}
