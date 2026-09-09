@@ -79,17 +79,13 @@ function extractBanks(text) {
 /*
    Account numbers can have different lengths.
 
-   Example official UNILUS accounts:
+   Examples:
    0012030001876
    0012031000719
    0010221013161
    0012030002029
    1071643
-
-   The previous regex effectively required longer numbers and could therefore
-   miss 7-digit institutional accounts such as 1071643.
-
-   We now allow 7–17 digits while still requiring an account-related label.
+   001-1071643
 */
 
 const BANK_ACCOUNT_REGEX =
@@ -97,9 +93,8 @@ const BANK_ACCOUNT_REGEX =
 
 
 /*
-   Account names are only extracted when an explicit "Account Name" label
-   exists. This prevents a bank name alone from being treated as proof of
-   an account.
+   Account names are only extracted when an explicit
+   "Account Name" label exists.
 */
 
 const ACCOUNT_NAME_REGEX =
@@ -204,138 +199,407 @@ function stripTags(html) {
    PAYMENT RECORD EXTRACTION
    ========================================================================= */
 
+/*
+   Convert a bank label into our standard bank name.
+
+   This also handles tables that write "INDO" instead of
+   "Indo-Zambia Bank".
+*/
+
+function normaliseBankName(value) {
+
+  var text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+  if (!text) {
+    return null;
+  }
+
+  if (
+    text.indexOf("indo-zambia") !== -1 ||
+    text === "indo" ||
+    text.indexOf("indo bank") !== -1
+  ) {
+    return "Indo-Zambia Bank";
+  }
+
+  for (var i = 0; i < BANK_NAMES.length; i++) {
+
+    if (
+      text.indexOf(
+        BANK_NAMES[i].toLowerCase()
+      ) !== -1
+    ) {
+      return BANK_NAMES[i];
+    }
+  }
+
+  return null;
+}
+
+
+/*
+   Extract account-number-looking values from one piece of text.
+*/
+
+function extractAccountNumbersFromText(value) {
+
+  var text = String(value || "");
+  var matches = [];
+  var regex = /(?:\d[\s\-]?){6,16}\d/g;
+  var m;
+
+  while ((m = regex.exec(text)) !== null) {
+
+    var raw = m[0];
+
+    var cleaned = raw
+      .replace(/[\s\-]/g, "");
+
+    if (
+      cleaned.length >= 7 &&
+      cleaned.length <= 17
+    ) {
+      matches.push({
+        raw: raw,
+        value: cleaned
+      });
+    }
+  }
+
+  return matches;
+}
+
+
+/*
+   Extract a value from a table cell.
+*/
+
+function cleanTableCell(cellHtml) {
+
+  return stripTags(cellHtml)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+/*
+   IMPORTANT:
+   Many institutional websites publish bank information
+   as an HTML table.
+
+   Example:
+
+   Bank            ABSA        INDO
+   Branch          Head Office INDO
+   Account Name    University  University
+   Account Number  001-107...  001203...
+
+   After stripTags(), the column relationship disappears.
+
+   This function reads the actual table structure before
+   flattening it, so each account stays attached to the
+   correct bank column.
+*/
+
+function extractPaymentRecordsFromTables(
+  html,
+  pageUrl,
+  pageTitle,
+  addRecord
+) {
+
+  if (!/<table\b/i.test(html)) {
+    return 0;
+  }
+
+  var tables =
+    html.match(
+      /<table\b[\s\S]*?<\/table>/gi
+    ) || [];
+
+  var count = 0;
+
+  tables.forEach(function (tableHtml) {
+
+    var rowMatches =
+      tableHtml.match(
+        /<tr\b[\s\S]*?<\/tr>/gi
+      ) || [];
+
+    var rows = [];
+
+    rowMatches.forEach(function (rowHtml) {
+
+      var cellMatches =
+        rowHtml.match(
+          /<t[dh]\b[\s\S]*?<\/t[dh]>/gi
+        ) || [];
+
+      if (!cellMatches.length) {
+        return;
+      }
+
+      var cells = cellMatches.map(
+        cleanTableCell
+      );
+
+      rows.push(cells);
+    });
+
+
+    /*
+       Find the bank row.
+
+       We look for a row containing known
+       bank names or an INDO abbreviation.
+    */
+
+    var bankRow = null;
+
+    rows.forEach(function (row) {
+
+      if (bankRow) {
+        return;
+      }
+
+      var banksFound = row.some(
+        function (cell) {
+          return !!normaliseBankName(cell);
+        }
+      );
+
+      if (banksFound) {
+        bankRow = row;
+      }
+    });
+
+
+    /*
+       Find the Account Number row.
+    */
+
+    var accountRow = null;
+
+    rows.forEach(function (row) {
+
+      if (accountRow) {
+        return;
+      }
+
+      var firstCell =
+        String(row[0] || "")
+          .toLowerCase();
+
+      if (
+        firstCell.indexOf("account number") !== -1 ||
+        firstCell.indexOf("account no") !== -1 ||
+        firstCell === "a/c" ||
+        firstCell.indexOf("a/c number") !== -1
+      ) {
+        accountRow = row;
+      }
+    });
+
+
+    /*
+       If we have both rows, pair them by column.
+    */
+
+    if (
+      bankRow &&
+      accountRow
+    ) {
+
+      for (
+        var column = 1;
+        column < accountRow.length;
+        column++
+      ) {
+
+        var accountCell =
+          accountRow[column] || "";
+
+        var accountValues =
+          extractAccountNumbersFromText(
+            accountCell
+          );
+
+        if (!accountValues.length) {
+          continue;
+        }
+
+        var bankCell =
+          bankRow[column] || "";
+
+        var bankName =
+          normaliseBankName(
+            bankCell
+          );
+
+
+        /*
+           If the bank cell is empty, don't guess.
+        */
+
+        if (!bankName) {
+          continue;
+        }
+
+
+        /*
+           Find the account name and branch
+           from the same column where possible.
+        */
+
+        var accountName = null;
+        var branch = null;
+
+        rows.forEach(function (row) {
+
+          var label =
+            String(row[0] || "")
+              .toLowerCase();
+
+          var value =
+            row[column] || "";
+
+          if (
+            label.indexOf("account name") !== -1
+          ) {
+            accountName = value || null;
+          }
+
+          if (
+            label === "branch" ||
+            label.indexOf("branch name") !== -1
+          ) {
+            branch = value || null;
+          }
+        });
+
+
+        accountValues.forEach(
+          function (account) {
+
+            addRecord(
+              account.value,
+              bankName,
+              accountName,
+              branch,
+              account.raw,
+              stripTags(
+                accountCell
+              )
+            );
+
+            count++;
+          }
+        );
+      }
+    }
+  });
+
+  return count;
+}
+
+
+/*
+   Main payment-record extractor.
+
+   Strategy:
+
+   1. Read real HTML tables when available.
+      This preserves bank/account relationships.
+
+   2. For PDFs and plain extracted text,
+      associate an account with the nearest bank
+      in the relevant text section.
+
+   3. NEVER select a bank simply because it appears
+      somewhere inside a large 200-character window.
+*/
+
 function extractPaymentRecords(
   html,
   pageUrl,
   pageTitle
 ) {
 
+  var isHtml =
+    /<html\b|<body\b|<table\b|<div\b|<p\b/i.test(
+      String(html || "")
+    );
+
   var text =
     stripTags(html);
 
   var records = [];
   var seen = {};
-  var m;
 
-  BANK_ACCOUNT_REGEX.lastIndex = 0;
 
-  while (
-    (m = BANK_ACCOUNT_REGEX.exec(text)) !== null
+  /*
+     Store a complete auditable payment record.
+  */
+
+  function addRecord(
+    accountNumber,
+    bankName,
+    accountName,
+    branch,
+    publishedAccountNumber,
+    context
   ) {
 
-    var accountNumber =
-      m[1]
-        .replace(/[\s\-]/g, "");
-
-    /*
-       Prevent duplicate account numbers from the same page.
-    */
-
-    if (seen[accountNumber]) {
-      continue;
-    }
-
-    seen[accountNumber] = true;
-
-
-    /*
-       Capture nearby text so we can identify the bank,
-       account name and branch associated with the account.
-    */
-
-    var start =
-      Math.max(
-        0,
-        m.index - 200
-      );
-
-    var end =
-      Math.min(
-        text.length,
-        m.index + m[0].length + 200
-      );
-
-    var context =
-      text
-        .slice(start, end)
+    var cleaned =
+      String(accountNumber || "")
+        .replace(/[\s\-]/g, "")
         .trim();
 
+    if (!cleaned) {
+      return;
+    }
 
     /*
-       Find bank name in the surrounding context.
+       Keep duplicate records out.
     */
 
-    var bankName =
-      BANK_NAMES.filter(
-        function (b) {
+    var key =
+      cleaned +
+      "|" +
+      String(bankName || "").toLowerCase();
 
-          return (
-            context
-              .toLowerCase()
-              .indexOf(
-                b.toLowerCase()
-              ) !== -1
-          );
+    if (seen[key]) {
+      return;
+    }
 
-        }
-      )[0] || null;
+    seen[key] = true;
 
-
-    /*
-       Find account name.
-    */
-
-    ACCOUNT_NAME_REGEX.lastIndex = 0;
-
-    var nameMatch =
-      ACCOUNT_NAME_REGEX.exec(
-        context
-      );
-
-    var accountName =
-      nameMatch
-        ? nameMatch[1]
-            .trim()
-            .replace(/\s+/g, " ")
-        : null;
-
-
-    /*
-       Find branch.
-    */
-
-    BRANCH_REGEX.lastIndex = 0;
-
-    var branchMatch =
-      BRANCH_REGEX.exec(
-        context
-      );
-
-    var branch =
-      branchMatch
-        ? branchMatch[1]
-            .trim()
-            .replace(/\s+/g, " ")
-        : null;
-
-
-    /*
-       Store the complete auditable payment record.
-    */
 
     records.push({
 
       accountNumber:
-        accountNumber,
+        cleaned,
+
+      /*
+         Preserve the exact published formatting
+         when we have it.
+      */
+
+      publishedAccountNumber:
+        publishedAccountNumber ||
+        cleaned,
 
       bankName:
-        bankName,
+        bankName || null,
 
       accountName:
-        accountName,
+        accountName || null,
 
       branch:
-        branch,
+        branch || null,
 
       source:
         pageUrl,
@@ -344,13 +608,335 @@ function extractPaymentRecords(
         pageTitle,
 
       context:
-        context,
+        context || "",
 
       discoveredAt:
         new Date().toISOString()
 
     });
   }
+
+
+  /* =======================================================================
+     STEP 1 — REAL HTML TABLES
+     ======================================================================= */
+
+  if (isHtml) {
+
+    extractPaymentRecordsFromTables(
+      html,
+      pageUrl,
+      pageTitle,
+      addRecord
+    );
+  }
+
+
+  /* =======================================================================
+     STEP 2 — TEXT / PDF EXTRACTION
+     ======================================================================= */
+
+  /*
+     If the table parser found nothing, use the extracted
+     text representation.
+
+     This is especially important for PDF documents.
+  */
+
+  if (records.length === 0) {
+
+    BANK_ACCOUNT_REGEX.lastIndex = 0;
+
+    var m;
+
+    while (
+      (m = BANK_ACCOUNT_REGEX.exec(text)) !== null
+    ) {
+
+      var publishedAccount =
+        m[1];
+
+      var accountNumber =
+        publishedAccount
+          .replace(/[\s\-]/g, "");
+
+
+      /*
+         Look backwards for the nearest bank.
+
+         This is deliberately different from the old
+         200-character "first bank found" logic.
+      */
+
+      var before =
+        text.slice(
+          0,
+          m.index
+        );
+
+      var bankMatches = [];
+
+      var bankRegex =
+        /Zanaco|Indo-Zambia Bank|Access Bank|ABSA|Stanbic|FNB|Standard Chartered|First Capital|Atlas Mara/gi;
+
+      var bankMatch;
+
+      while (
+        (bankMatch =
+          bankRegex.exec(before)) !== null
+      ) {
+
+        bankMatches.push({
+          name:
+            normaliseBankName(
+              bankMatch[0]
+            ),
+
+          index:
+            bankMatch.index
+        });
+      }
+
+
+      var bankName = null;
+
+      if (bankMatches.length) {
+
+        bankName =
+          bankMatches[
+            bankMatches.length - 1
+          ].name;
+      }
+
+
+      /*
+         Context is kept for auditing, but is NOT used
+         to choose the bank.
+      */
+
+      var start =
+        Math.max(
+          0,
+          m.index - 200
+        );
+
+      var end =
+        Math.min(
+          text.length,
+          m.index +
+          m[0].length +
+          200
+        );
+
+      var context =
+        text
+          .slice(
+            start,
+            end
+          )
+          .trim();
+
+
+      /*
+         Extract account name.
+      */
+
+      ACCOUNT_NAME_REGEX.lastIndex = 0;
+
+      var nameMatch =
+        ACCOUNT_NAME_REGEX.exec(
+          context
+        );
+
+      var accountName =
+        nameMatch
+          ? nameMatch[1]
+              .trim()
+              .replace(/\s+/g, " ")
+          : null;
+
+
+      /*
+         Extract branch.
+      */
+
+      BRANCH_REGEX.lastIndex = 0;
+
+      var branchMatch =
+        BRANCH_REGEX.exec(
+          context
+        );
+
+      var branch =
+        branchMatch
+          ? branchMatch[1]
+              .trim()
+              .replace(/\s+/g, " ")
+          : null;
+
+
+      addRecord(
+        accountNumber,
+        bankName,
+        accountName,
+        branch,
+        publishedAccount,
+        context
+      );
+    }
+  }
+
+
+  /* =======================================================================
+     STEP 3 — SECONDARY TEXT PASS
+     ======================================================================= */
+
+  /*
+     Some PDF/table extraction engines produce:
+
+       Account Number 001-1071643 0012031000719
+
+     instead of repeating "Account Number".
+
+     If the first pass only found one account, inspect
+     the immediate Account Number section for additional
+     account-number-looking values.
+
+     We do NOT run this globally because that could
+     accidentally treat phone numbers or unrelated
+     numbers as bank accounts.
+  */
+
+  var accountLabelRegex =
+    /(?:account\s+number|account\s+no\.?|a\/c\s+number|a\/c\s+no\.?)/gi;
+
+  var labelMatch;
+
+  while (
+    (labelMatch =
+      accountLabelRegex.exec(text)) !== null
+  ) {
+
+    var sectionStart =
+      labelMatch.index +
+      labelMatch[0].length;
+
+    var sectionEnd =
+      Math.min(
+        text.length,
+        sectionStart + 180
+      );
+
+    var section =
+      text.slice(
+        sectionStart,
+        sectionEnd
+      );
+
+
+    /*
+       Stop at obvious next-field labels.
+    */
+
+    var stopMatch =
+      section.search(
+        /\b(?:swift\s+code|currency|sort\s+code|branch\s+code|student\s+number)\b/i
+      );
+
+    if (stopMatch !== -1) {
+      section =
+        section.slice(
+          0,
+          stopMatch
+        );
+    }
+
+
+    var accountValues =
+      extractAccountNumbersFromText(
+        section
+      );
+
+    if (accountValues.length <= 1) {
+      continue;
+    }
+
+
+    /*
+       Try to determine bank columns from the
+       surrounding text.
+
+       We use the order of bank names in the
+       nearest relevant area rather than the global
+       BANK_NAMES array order.
+    */
+
+    var surroundingStart =
+      Math.max(
+        0,
+        labelMatch.index - 300
+      );
+
+    var surrounding =
+      text.slice(
+        surroundingStart,
+        labelMatch.index
+      );
+
+    var surroundingBanks = [];
+
+    var surroundingBankRegex =
+      /Zanaco|Indo-Zambia Bank|Access Bank|ABSA|Stanbic|FNB|Standard Chartered|First Capital|Atlas Mara/gi;
+
+    var sb;
+
+    while (
+      (sb =
+        surroundingBankRegex.exec(
+          surrounding
+        )) !== null
+    ) {
+
+      surroundingBanks.push(
+        normaliseBankName(
+          sb[0]
+        )
+      );
+    }
+
+
+    /*
+       If there are exactly as many bank names
+       as account numbers, pair them by order.
+    */
+
+    if (
+      surroundingBanks.length ===
+      accountValues.length
+    ) {
+
+      accountValues.forEach(
+        function (account, index) {
+
+          addRecord(
+            account.value,
+            surroundingBanks[index],
+            null,
+            null,
+            account.raw,
+            text.slice(
+              surroundingStart,
+              Math.min(
+                text.length,
+                sectionStart + 180
+              )
+            ).trim()
+          );
+        }
+      );
+    }
+  }
+
 
   return records;
 }
