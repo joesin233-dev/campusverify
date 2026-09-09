@@ -10,6 +10,13 @@
    is not rejected just because the configured base domain is
    "unilus.ac.zm" — that was a real bug in v3, fixed here.
 
+   homepage: OPTIONAL. The actual working URL the crawler should start
+   crawling from. Use this when the bare base domain doesn't itself serve
+   a working site (dead SSL cert, no server, redirects elsewhere) but a
+   subdomain does — e.g. unilus.ac.zm's certificate is expired, but
+   web.unilus.ac.zm works fine. If omitted, the crawler falls back to
+   "https://" + domain + "/".
+
    seedPages: pages the crawler always starts from IN ADDITION to the
    homepage, so known-important pages (contact/fees) are covered even if
    the site doesn't link to them prominently. The crawler still discovers
@@ -30,6 +37,7 @@ const INSTITUTIONS = [
     name: "University of Lusaka (UNILUS)",
     shortName: "UNILUS",
     domain: "unilus.ac.zm",
+    homepage: "https://web.unilus.ac.zm/",
     status: "supported",
     seedPages: [
       "https://web.unilus.ac.zm/contact-us/",
@@ -44,7 +52,9 @@ const INSTITUTIONS = [
 
   /* To add an institution: give it an id, name, official base domain,
      status: "supported" (the honest default), and a couple of seedPages
-     to help the crawler get started. Nothing else needs to change. */
+     to help the crawler get started. Nothing else needs to change.
+     Only add a "homepage" field if the bare domain doesn't itself work
+     (dead cert, no server) but a subdomain like www./web. does. */
 ];
 
 function getInstitutionById(id) {
