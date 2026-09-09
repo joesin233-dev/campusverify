@@ -607,10 +607,10 @@ function htmlToText(html) {
       " "
     )
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .replace(/s+/g, " ")
     .trim();
 }
@@ -705,7 +705,6 @@ async function processDocument(buffer, pageUrl, itemLists, isPdf) {
       text = (parsed && parsed.text) || "";
 
       if (!text || text.trim().length < 50) {
-        // Very short text: possibly scanned PDF
         console.log(
           "PDF text very short, using raw fallback:",
           pageUrl,
@@ -731,7 +730,6 @@ async function processDocument(buffer, pageUrl, itemLists, isPdf) {
     return;
   }
 
-  // Optional debug: log if we see long digit sequences
   if (/d{9,13}/.test(text)) {
     console.log(
       "Document with possible account numbers:",
