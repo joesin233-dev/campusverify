@@ -9,37 +9,17 @@
    - Discover official documents/PDFs linked from those pages.
    - Extract phones, emails, banks, payment records and instructions.
    - Preserve the official source for every discovered item.
+   - Use institution-specific JSON evidence only as a FALLBACK.
    - Never search Google or the wider internet.
    - Never treat a bank-name-only match as proof of an account.
    - Never claim a missing result means fraud.
 
-   CRAWL FLOW:
-
-   Official institution website
-            ↓
-       Homepage
-            ↓
-      Discover links
-            ↓
-    Priority useful pages
-            ↓
-     Discover more links
-            ↓
-       Documents/PDFs
-            ↓
-       Extract evidence
-            ↓
-     Continue recursively
-            ↓
-       Safety limits
-            ↓
-       Evidence result
-
    IMPORTANT:
+   - The live crawler remains the primary evidence source.
+   - JSON evidence does NOT replace the crawler.
+   - JSON evidence is used to preserve official information that
+     automated extraction could not reliably recover.
    - The crawler stays inside the institution's approved host/domain.
-   - It does not follow external websites.
-   - It does not use Google.
-   - It does not use a hardcoded bank-account database.
    ========================================================================= */
 
 const {
@@ -58,21 +38,19 @@ const {
 
 const pdfParse = require("pdf-parse");
 
+const fs = require("fs");
+const path = require("path");
+
 
 /* =========================================================================
    SETTINGS
    ========================================================================= */
 
 const FETCH_TIMEOUT_MS = 10000;
-
 const MAX_PAGES_PER_INSTITUTION = 250;
-
 const MAX_CRAWL_DEPTH = 15;
-
 const MAX_CRAWL_TIME_MS = 45000;
-
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-
 const MAX_LINKS_PER_PAGE = 500;
 
 
@@ -83,62 +61,45 @@ const MAX_LINKS_PER_PAGE = 500;
 const PRIORITY_KEYWORDS = [
   "contact",
   "contacts",
-
   "admission",
   "admissions",
-
   "student",
   "students",
   "student-affairs",
   "student_affairs",
   "studentaffairs",
-
   "account",
   "accounts",
-
   "finance",
   "financial",
-
   "fee",
   "fees",
-
   "payment",
   "payments",
-
   "bank",
   "banking",
   "bank-details",
   "bank_details",
-
   "registration",
   "register",
   "registration-notice",
-
   "notice",
   "notices",
   "announcement",
   "announcements",
-
   "news",
-
   "prospectus",
-
   "download",
   "downloads",
   "document",
   "documents",
-
   "pdf",
-
   "international",
   "international-student",
-
   "accommodation",
   "hostel",
-
   "tuition",
   "school-fees",
-
   "accounts-office",
   "bursar"
 ];
@@ -271,9 +232,7 @@ async function fetchWithTimeout(
   try {
     return await fetch(url, {
       signal: controller.signal,
-
       redirect: "follow",
-
       headers: {
         "User-Agent":
           "CampusVerify-Crawler/5.0 (+official institutional verification)"
@@ -466,7 +425,7 @@ function discoverLinks(
       continue;
     }
 
-    var path =
+    var pathName =
       parsed.pathname.toLowerCase();
 
     var score = 0;
@@ -474,7 +433,7 @@ function discoverLinks(
     PRIORITY_KEYWORDS.forEach(
       function (keyword) {
         if (
-          path.indexOf(keyword) !== -1
+          pathName.indexOf(keyword) !== -1
         ) {
           score += 3;
         }
@@ -488,14 +447,14 @@ function discoverLinks(
     );
 
     if (
-      DOCUMENT_EXTENSIONS.test(path)
+      DOCUMENT_EXTENSIONS.test(pathName)
     ) {
       score += 10;
     }
 
     if (
       /bank|payment|fee|account|finance|registration/i.test(
-        path
+        pathName
       )
     ) {
       score += 5;
@@ -773,12 +732,198 @@ function addPaymentRecord(
         record.context;
     }
 
+    if (
+      !existingRecord.source &&
+      record.source
+    ) {
+      existingRecord.source =
+        record.source;
+    }
+
     return;
   }
 
   list.push({
     value: record,
     source: record.source
+  });
+}
+
+
+/* =========================================================================
+   OFFICIAL JSON EVIDENCE FALLBACK
+   -----------------------------------------------------------------------
+   The live crawler remains the primary source.
+   This loads institution-specific official evidence only as a fallback.
+   ========================================================================= */
+
+function loadEvidenceFallback(
+  institution
+) {
+  var filePath =
+    path.join(
+      __dirname,
+      "..",
+      "data",
+      "evidence",
+      institution.id + ".json"
+    );
+
+  try {
+    if (!fs.existsSync(filePath)) {
+      return [];
+    }
+
+    var raw =
+      fs.readFileSync(
+        filePath,
+        "utf8"
+      );
+
+    var data =
+      JSON.parse(raw);
+
+    if (
+      !data ||
+      !Array.isArray(
+        data.evidence
+      )
+    ) {
+      return [];
+    }
+
+    return data.evidence;
+
+  } catch (err) {
+    console.error(
+      "CampusVerify evidence fallback failed:",
+      institution.id,
+      err.message
+    );
+
+    return [];
+  }
+}
+
+
+/* =========================================================================
+   MERGE OFFICIAL JSON EVIDENCE
+   -----------------------------------------------------------------------
+   JSON evidence is merged into the same evidence lists used by the live
+   crawler. Existing live evidence is never removed or replaced.
+   ========================================================================= */
+
+function mergeEvidenceFallback(
+  itemLists,
+  evidence
+) {
+  if (!Array.isArray(evidence)) {
+    return;
+  }
+
+  evidence.forEach(function (item) {
+    if (
+      !item ||
+      !item.type
+    ) {
+      return;
+    }
+
+    var source =
+      item.sourceUrl ||
+      item.source ||
+      "";
+
+    if (
+      item.type === "phone" &&
+      item.value
+    ) {
+      addItem(
+        itemLists.phones,
+        item.value,
+        source,
+        item.value
+      );
+
+      return;
+    }
+
+    if (
+      item.type === "email" &&
+      item.value
+    ) {
+      addItem(
+        itemLists.emails,
+        item.value,
+        source,
+        item.value
+      );
+
+      return;
+    }
+
+    if (
+      item.type === "bank" &&
+      item.value
+    ) {
+      addItem(
+        itemLists.bankNames,
+        item.value,
+        source,
+        item.value
+      );
+
+      return;
+    }
+
+    if (
+      item.type === "payment" &&
+      item.accountNumber
+    ) {
+      addPaymentRecord(
+        itemLists.paymentRecords,
+        {
+          accountNumber:
+            item.accountNumber,
+
+          publishedAccountNumber:
+            item.accountNumber,
+
+          bankName:
+            item.bankName || "",
+
+          accountName:
+            item.accountName || "",
+
+          branch:
+            item.branch || "",
+
+          source:
+            source,
+
+          pageTitle:
+            item.sourceTitle || "",
+
+          context:
+            item.context || ""
+        }
+      );
+
+      return;
+    }
+
+    if (
+      item.type ===
+        "payment_instruction" &&
+      item.value
+    ) {
+      addItem(
+        itemLists.paymentInstructions,
+        item.value,
+        source,
+        item.value
+      );
+    }
   });
 }
 
@@ -982,10 +1127,6 @@ function extractPossibleDocumentText(
    PROCESS DOCUMENT
    -----------------------------------------------------------------------
    PDFs are parsed with pdf-parse first.
-
-   The function also returns diagnostics so the crawler response tells us
-   whether a PDF was parsed successfully and how much text/evidence was
-   actually extracted from it.
    ========================================================================= */
 
 async function processDocument(
@@ -1216,9 +1357,6 @@ async function fetchPage(
     var contentType =
       getContentType(response);
 
-    /*
-     * PDF/document.
-     */
     if (
       isPdfResponse(
         response,
@@ -1279,9 +1417,6 @@ async function fetchPage(
       return [];
     }
 
-    /*
-     * Ignore images, videos, ZIP files, etc.
-     */
     if (
       !isHtmlResponse(
         response
@@ -1390,6 +1525,16 @@ async function crawlInstitution(
 
   var visited =
     new Set();
+
+
+  /* -----------------------------------------------------------------------
+     LOAD OFFICIAL FALLBACK EVIDENCE
+     ----------------------------------------------------------------------- */
+
+  var fallbackEvidence =
+    loadEvidenceFallback(
+      institution
+    );
 
 
   /* -----------------------------------------------------------------------
@@ -1577,6 +1722,16 @@ async function crawlInstitution(
       }
     );
   }
+
+
+  /* -----------------------------------------------------------------------
+     MERGE OFFICIAL FALLBACK EVIDENCE
+     ----------------------------------------------------------------------- */
+
+  mergeEvidenceFallback(
+    itemLists,
+    fallbackEvidence
+  );
 
 
   /* -----------------------------------------------------------------------
@@ -1768,11 +1923,11 @@ module.exports =
         items:
           result.items,
 
-        pagesCrawled:
-          result.pagesCrawled,
-
         sources:
           result.sources,
+
+        pagesCrawled:
+          result.pagesCrawled,
 
         crawlStats:
           result.crawlStats,
@@ -1826,15 +1981,22 @@ module.exports =
           pagesSuccessful: 0,
           pagesFailed: 1,
           pagesPending: 0,
+
           maxPages:
             MAX_PAGES_PER_INSTITUTION,
+
           maxDepth:
             MAX_CRAWL_DEPTH,
+
           maxTimeMs:
             MAX_CRAWL_TIME_MS,
+
           timeLimitReached: false,
+
           pageLimitReached: false,
+
           crawlEndedNaturally: false,
+
           dataComplete: false
         },
 
