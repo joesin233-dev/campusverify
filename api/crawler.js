@@ -1761,9 +1761,10 @@ module.exports =
      * Start from the institution's configured official domain.
      */
     var homepage =
-      "https://" +
+      institution.homepage ||
+      ("https://" +
       institution.domain +
-      "/";
+      "/");
 
 
     var startTime =
