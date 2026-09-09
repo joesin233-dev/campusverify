@@ -63,30 +63,16 @@ const pdfParse = require("pdf-parse");
    SETTINGS
    ========================================================================= */
 
-/*
- * These are safety limits.
- *
- * They are NOT the intended number of pages.
- *
- * The crawler keeps going while useful pages remain until one of these
- * limits is reached.
- */
-
 const FETCH_TIMEOUT_MS = 10000;
 
-/* Maximum URLs processed during one crawl */
 const MAX_PAGES_PER_INSTITUTION = 250;
 
-/* Maximum link depth */
 const MAX_CRAWL_DEPTH = 15;
 
-/* Maximum total crawl time */
 const MAX_CRAWL_TIME_MS = 45000;
 
-/* Maximum response size */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-/* Maximum links discovered from one HTML page */
 const MAX_LINKS_PER_PAGE = 500;
 
 
@@ -170,12 +156,6 @@ const EXCLUDED_PATH_PATTERNS =
    FILE TYPES
    ========================================================================= */
 
-/*
- * These are document links that we may discover.
- *
- * PDF is the most important document format for institutional payment
- * information.
- */
 const DOCUMENT_EXTENSIONS =
   /\.(pdf|doc|docx|xls|xlsx|csv|txt)$/i;
 
@@ -200,14 +180,8 @@ function normaliseUrl(url) {
   try {
     var parsed = new URL(url);
 
-    /*
-     * Fragments do not represent separate server pages.
-     */
     parsed.hash = "";
 
-    /*
-     * Remove tracking parameters so the same page is not crawled repeatedly.
-     */
     [
       "utm_source",
       "utm_medium",
@@ -222,9 +196,6 @@ function normaliseUrl(url) {
       parsed.searchParams.delete(param);
     });
 
-    /*
-     * Remove trailing slash except from homepage.
-     */
     if (parsed.pathname.length > 1) {
       parsed.pathname =
         parsed.pathname.replace(/\/+$/, "");
@@ -249,9 +220,6 @@ function isCrawlableUrl(
   try {
     var parsed = new URL(url);
 
-    /*
-     * HTTP and HTTPS only.
-     */
     if (
       parsed.protocol !== "https:" &&
       parsed.protocol !== "http:"
@@ -259,9 +227,6 @@ function isCrawlableUrl(
       return false;
     }
 
-    /*
-     * NEVER leave the institution's approved host/domain.
-     */
     if (
       !isSameInstitutionHost(
         parsed.hostname,
@@ -271,9 +236,6 @@ function isCrawlableUrl(
       return false;
     }
 
-    /*
-     * Do not enter login/admin/portal areas.
-     */
     if (
       EXCLUDED_PATH_PATTERNS.test(
         parsed.pathname
@@ -440,9 +402,6 @@ function discoverLinks(
       continue;
     }
 
-    /*
-     * Ignore non-web links.
-     */
     if (
       /^javascript:/i.test(href) ||
       /^mailto:/i.test(href) ||
@@ -452,9 +411,6 @@ function discoverLinks(
       continue;
     }
 
-    /*
-     * Ignore fragment-only links.
-     */
     if (href.charAt(0) === "#") {
       continue;
     }
@@ -515,11 +471,6 @@ function discoverLinks(
 
     var score = 0;
 
-    /*
-     * Score useful words in both:
-     * - URL path
-     * - anchor text
-     */
     PRIORITY_KEYWORDS.forEach(
       function (keyword) {
         if (
@@ -536,18 +487,12 @@ function discoverLinks(
       }
     );
 
-    /*
-     * Documents receive extra priority.
-     */
     if (
       DOCUMENT_EXTENSIONS.test(path)
     ) {
       score += 10;
     }
 
-    /*
-     * Payment/finance pages are particularly important.
-     */
     if (
       /bank|payment|fee|account|finance|registration/i.test(
         path
@@ -562,9 +507,6 @@ function discoverLinks(
     });
   }
 
-  /*
-   * Highest-value links first.
-   */
   found.sort(function (a, b) {
     return b.score - a.score;
   });
@@ -611,12 +553,6 @@ function extractCanonicalUrl(
    SITEMAP DISCOVERY
    ========================================================================= */
 
-/*
- * This does NOT search the wider internet.
- *
- * If the institution itself exposes /sitemap.xml, it is still part of the
- * institution's own website and can be used to discover pages.
- */
 async function discoverSitemap(
   homepage,
   institution,
@@ -712,9 +648,6 @@ async function discoverSitemap(
         score: 40
       });
 
-      /*
-       * Don't let a massive sitemap overwhelm the crawler.
-       */
       if (urls.length >= 1000) {
         break;
       }
@@ -788,9 +721,6 @@ function addPaymentRecord(
     return;
   }
 
-  /*
-   * Same account on multiple pages = one payment record.
-   */
   var existing =
     list.find(function (item) {
       var rec =
@@ -811,9 +741,6 @@ function addPaymentRecord(
     var existingRecord =
       existing.value || existing;
 
-    /*
-     * Preserve richer evidence from another page.
-     */
     if (
       !existingRecord.bankName &&
       record.bankName
@@ -910,13 +837,6 @@ function processHtmlPage(
     return [];
   }
 
-  /*
-   * IMPORTANT:
-   *
-   * Run extraction against visible-ish text as well as HTML.
-   *
-   * This helps when a number is split by markup.
-   */
   var text =
     htmlToText(html);
 
@@ -956,9 +876,6 @@ function processHtmlPage(
   var pageTitle =
     extractTitle(html);
 
-  /*
-   * Payment records MUST come from the actual source text.
-   */
   extractPaymentRecords(
     text,
     pageUrl,
@@ -983,9 +900,6 @@ function processHtmlPage(
     );
   });
 
-  /*
-   * Discover more official pages.
-   */
   var discovered =
     discoverLinks(
       html,
@@ -993,10 +907,6 @@ function processHtmlPage(
       institution
     );
 
-  /*
-   * Follow canonical URL only when it remains on the approved institution
-   * host/domain.
-   */
   var canonical =
     extractCanonicalUrl(
       html,
@@ -1024,18 +934,6 @@ function processHtmlPage(
    BASIC DOCUMENT TEXT EXTRACTION (FALLBACK ONLY)
    ========================================================================= */
 
-/*
- * NOTE:
- *
- * This function is intentionally conservative and is now used ONLY as a
- * fallback when real PDF parsing (pdf-parse) fails or the document isn't
- * a PDF at all (e.g. .doc/.txt).
- *
- * It is NOT a complete PDF parser. Most real-world PDFs compress their
- * text streams (FlateDecode), so this raw-bytes approach usually finds
- * nothing useful on an actual PDF — that's why pdf-parse is used first
- * for PDFs, and this only catches the leftover edge cases.
- */
 function extractPossibleDocumentText(
   buffer
 ) {
@@ -1046,9 +944,6 @@ function extractPossibleDocumentText(
   var raw =
     buffer.toString("latin1");
 
-  /*
-   * Decode some common PDF escaped strings.
-   */
   raw =
     raw
       .replace(
@@ -1068,9 +963,6 @@ function extractPossibleDocumentText(
         " "
       );
 
-  /*
-   * Collect printable sequences.
-   */
   var matches =
     raw.match(
       /[\x20-\x7E]{3,}/g
@@ -1089,10 +981,11 @@ function extractPossibleDocumentText(
 /* =========================================================================
    PROCESS DOCUMENT
    -----------------------------------------------------------------------
-   Now async: real PDFs go through pdf-parse first (handles compressed
-   text streams properly). If that fails for any reason, or the file
-   isn't actually a PDF, we fall back to the old raw-bytes scan so
-   .doc/.txt/.csv documents still get *something* extracted.
+   PDFs are parsed with pdf-parse first.
+
+   The function also returns diagnostics so the crawler response tells us
+   whether a PDF was parsed successfully and how much text/evidence was
+   actually extracted from it.
    ========================================================================= */
 
 async function processDocument(
@@ -1101,31 +994,78 @@ async function processDocument(
   itemLists,
   isPdf
 ) {
-  var text;
+  var text = "";
+  var parseSuccess = false;
+  var parseError = null;
+  var pdfPages = null;
 
   if (isPdf) {
     try {
-      var parsed = await pdfParse(buffer);
-      text = (parsed && parsed.text) || "";
+      var parsed =
+        await pdfParse(buffer);
+
+      text =
+        (parsed && parsed.text) || "";
+
+      pdfPages =
+        parsed && parsed.numpages
+          ? parsed.numpages
+          : null;
+
+      parseSuccess = true;
+
     } catch (err) {
+      parseError =
+        err && err.message
+          ? err.message
+          : String(err);
+
       console.error(
         "CampusVerify PDF parse failed, falling back:",
         pageUrl,
-        err && err.message
+        parseError
       );
-      text = extractPossibleDocumentText(buffer);
+
+      text =
+        extractPossibleDocumentText(
+          buffer
+        );
     }
+
   } else {
-    text = extractPossibleDocumentText(buffer);
+    text =
+      extractPossibleDocumentText(
+        buffer
+      );
   }
 
-  if (!text) {
-    return;
-  }
+  text =
+    String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r/g, "\n");
 
-  extractPhones(
-    text
-  ).forEach(function (phone) {
+  var phones =
+    extractPhones(text);
+
+  var emails =
+    extractEmails(text);
+
+  var banks =
+    extractBanks(text);
+
+  var paymentRecords =
+    extractPaymentRecords(
+      text,
+      pageUrl,
+      pageUrl.split("/").pop() ||
+        "Official document"
+    );
+
+  var instructions =
+    extractPaymentInstructions(text);
+
+
+  phones.forEach(function (phone) {
     addItem(
       itemLists.phones,
       phone,
@@ -1134,9 +1074,8 @@ async function processDocument(
     );
   });
 
-  extractEmails(
-    text
-  ).forEach(function (email) {
+
+  emails.forEach(function (email) {
     addItem(
       itemLists.emails,
       email,
@@ -1145,9 +1084,8 @@ async function processDocument(
     );
   });
 
-  extractBanks(
-    text
-  ).forEach(function (bank) {
+
+  banks.forEach(function (bank) {
     addItem(
       itemLists.bankNames,
       bank,
@@ -1156,35 +1094,61 @@ async function processDocument(
     );
   });
 
-  var title =
-    pageUrl
-      .split("/")
-      .pop() ||
-    "Official document";
 
-  extractPaymentRecords(
-    text,
-    pageUrl,
-    title
-  ).forEach(function (record) {
-    addPaymentRecord(
-      itemLists.paymentRecords,
-      record
-    );
-  });
+  paymentRecords.forEach(
+    function (record) {
+      addPaymentRecord(
+        itemLists.paymentRecords,
+        record
+      );
+    }
+  );
 
-  extractPaymentInstructions(
-    text
-  ).forEach(function (instruction) {
-    addItem(
-      itemLists.paymentInstructions,
-      instruction,
-      pageUrl,
-      instruction
-        .trim()
-        .toLowerCase()
-    );
-  });
+
+  instructions.forEach(
+    function (instruction) {
+      addItem(
+        itemLists.paymentInstructions,
+        instruction,
+        pageUrl,
+        instruction
+          .trim()
+          .toLowerCase()
+      );
+    }
+  );
+
+
+  return {
+    parsed: isPdf,
+
+    parseSuccess:
+      parseSuccess,
+
+    parseError:
+      parseError,
+
+    pdfPages:
+      pdfPages,
+
+    textLength:
+      text.length,
+
+    phonesFound:
+      phones.length,
+
+    emailsFound:
+      emails.length,
+
+    banksFound:
+      banks.length,
+
+    paymentRecordsFound:
+      paymentRecords.length,
+
+    instructionsFound:
+      instructions.length
+  };
 }
 
 
@@ -1264,18 +1228,52 @@ async function fetchPage(
         parsed.pathname
       )
     ) {
-      await processDocument(
-        buffer,
-        url,
-        itemLists,
-        isPdfResponse(response, url)
-      );
+      var documentResult =
+        await processDocument(
+          buffer,
+          url,
+          itemLists,
+          isPdfResponse(
+            response,
+            url
+          )
+        );
 
       pageStatus.push({
         url: url,
         status: "ok",
         type: "document",
-        contentType: contentType
+        contentType: contentType,
+
+        isPdf:
+          documentResult.parsed,
+
+        pdfParsed:
+          documentResult.parseSuccess,
+
+        pdfPages:
+          documentResult.pdfPages,
+
+        textLength:
+          documentResult.textLength,
+
+        phonesFound:
+          documentResult.phonesFound,
+
+        emailsFound:
+          documentResult.emailsFound,
+
+        banksFound:
+          documentResult.banksFound,
+
+        paymentRecordsFound:
+          documentResult.paymentRecordsFound,
+
+        instructionsFound:
+          documentResult.instructionsFound,
+
+        parseError:
+          documentResult.parseError
       });
 
       return [];
@@ -1456,9 +1454,6 @@ async function crawlInstitution(
       score: score || 0
     });
 
-    /*
-     * Keep useful pages near the front.
-     */
     queue.sort(function (a, b) {
       if (
         b.score !== a.score
@@ -1553,9 +1548,6 @@ async function crawlInstitution(
       continue;
     }
 
-    /*
-     * Mark before fetching so failed URLs are not repeatedly queued.
-     */
     visited.add(
       current.url
     );
@@ -1621,20 +1613,12 @@ async function crawlInstitution(
     );
 
 
-  /*
-   * If the queue still has URLs, there was more work available.
-   */
   var crawlEndedNaturally =
     !timeLimitReached &&
     !pageLimitReached &&
     pendingLinks === 0;
 
 
-  /*
-   * A crawl can have some failed pages while still being useful.
-   *
-   * Therefore dataComplete is stricter than "we got something".
-   */
   var failedPages =
     pageStatus.filter(
       function (item) {
@@ -1655,10 +1639,6 @@ async function crawlInstitution(
     failedPages.length === 0;
 
 
-  /*
-   * crawlFailed means the crawler could not successfully process ANY
-   * official page.
-   */
   var crawlFailed =
     successfulPages.length === 0;
 
@@ -1725,14 +1705,6 @@ module.exports =
     req,
     res
   ) {
-    /*
-     * CURRENT ARCHITECTURE:
-     *
-     * script.js identifies the institution first and sends its ID.
-     *
-     * The next script.js upgrade will also send the official website URL,
-     * allowing the frontend/backend flow to be explicitly website-driven.
-     */
     var institutionId =
       req.query.institution;
 
@@ -1757,9 +1729,6 @@ module.exports =
     }
 
 
-    /*
-     * Start from the institution's configured official domain.
-     */
     var homepage =
       institution.homepage ||
       ("https://" +
