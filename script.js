@@ -341,6 +341,7 @@
         hideResultCard();
         renderInfoBody();
         renderReportChannels();
+        renderReportInstitutionContacts();
       }
     );
   }
@@ -673,6 +674,7 @@
 
     if (pageName === "report") {
       renderReportChannels();
+      renderReportInstitutionContacts();
     }
   }
 
@@ -2955,6 +2957,149 @@
       "<p class=\"empty-state\">Identify your institution on the Verify page to see its reporting channels.</p>";
   }
 
+  /*
+   * Shows the institution's own live-crawled contacts (phones/emails)
+   * in the Report Centre, so a student reporting a scam can copy the
+   * institution's REAL contact details straight into their report or
+   * email — pulled from the same crawl used for verification, not a
+   * separate hand-maintained list.
+   */
+  function renderReportInstitutionContacts() {
+    var container =
+      $("report-institution-contacts");
+
+    if (!container) {
+      return;
+    }
+
+    if (!currentInstitutionId) {
+      container.innerHTML =
+        "<p class=\"empty-state\">Identify your institution on the Verify page to see its published contacts.</p>";
+
+      return;
+    }
+
+    container.innerHTML =
+      "<p class=\"empty-state\">Loading live contacts…</p>";
+
+    crawlInstitution(
+      currentInstitutionId
+    ).then(function (data) {
+      var it =
+        data.items || {};
+
+      var contacts = [];
+
+      (it.phones || []).forEach(
+        function (p) {
+          if (p && p.value) {
+            contacts.push({
+              label: "Phone",
+              value: p.value,
+              source: p.source
+            });
+          }
+        }
+      );
+
+      (it.emails || []).forEach(
+        function (e) {
+          if (e && e.value) {
+            contacts.push({
+              label: "Email",
+              value: e.value,
+              source: e.source
+            });
+          }
+        }
+      );
+
+      if (!contacts.length) {
+        container.innerHTML =
+          "<p class=\"empty-state\">" +
+          (
+            data.crawlFailed
+              ? "Could not reach this institution's official pages right now."
+              : "No published contacts found on this institution's official pages yet."
+          ) +
+          "</p>";
+
+        return;
+      }
+
+      container.innerHTML =
+        contacts
+          .map(function (c) {
+            return (
+              "<button type=\"button\" class=\"info-card info-card-copy\" data-copy-value=\"" +
+              escapeHtml(c.value) +
+              "\">" +
+
+              "<span class=\"info-card-title\">" +
+              escapeHtml(c.label) +
+              "</span>" +
+
+              "<span class=\"info-card-detail\">" +
+              escapeHtml(c.value) +
+              "</span>" +
+
+              "<span class=\"info-card-source info-card-copy-hint\">Tap to copy</span>" +
+
+              "</button>"
+            );
+          })
+          .join("");
+
+      container
+        .querySelectorAll(
+          ".info-card-copy"
+        )
+        .forEach(function (btn) {
+          btn.addEventListener(
+            "click",
+            function () {
+              var value =
+                btn.getAttribute(
+                  "data-copy-value"
+                );
+
+              if (
+                navigator.clipboard &&
+                navigator.clipboard.writeText
+              ) {
+                navigator.clipboard
+                  .writeText(value)
+                  .catch(
+                    function () {}
+                  );
+              }
+
+              var hint =
+                btn.querySelector(
+                  ".info-card-copy-hint"
+                );
+
+              if (hint) {
+                var original =
+                  hint.textContent;
+
+                hint.textContent =
+                  "Copied!";
+
+                setTimeout(
+                  function () {
+                    hint.textContent =
+                      original;
+                  },
+                  1500
+                );
+              }
+            }
+          );
+        });
+    });
+  }
+
   if (reportForm) {
     reportForm.addEventListener(
       "submit",
@@ -3176,6 +3321,7 @@
       );
 
       renderReportChannels();
+      renderReportInstitutionContacts();
 
       /*
        * Make sure the initial verification tile state is consistent with
