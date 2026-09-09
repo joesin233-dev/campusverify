@@ -1,7 +1,7 @@
 /* =========================================================================
    CampusVerify — api/crawler.js
    -----------------------------------------------------------------------
-   General institutional website crawler
+   General institutional website crawler (strengthened version)
 
    PURPOSE:
    - Crawl an institution's public official website.
@@ -58,37 +58,26 @@ const {
 
 const pdfParse = require("pdf-parse");
 
-
 /* =========================================================================
    SETTINGS
    ========================================================================= */
 
-/*
- * These are safety limits.
- *
- * They are NOT the intended number of pages.
- *
- * The crawler keeps going while useful pages remain until one of these
- * limits is reached.
- */
-
-const FETCH_TIMEOUT_MS = 10000;
+const FETCH_TIMEOUT_MS = 12000;
 
 /* Maximum URLs processed during one crawl */
-const MAX_PAGES_PER_INSTITUTION = 250;
+const MAX_PAGES_PER_INSTITUTION = 350;
 
 /* Maximum link depth */
-const MAX_CRAWL_DEPTH = 15;
+const MAX_CRAWL_DEPTH = 18;
 
 /* Maximum total crawl time */
-const MAX_CRAWL_TIME_MS = 45000;
+const MAX_CRAWL_TIME_MS = 60000;
 
 /* Maximum response size */
-const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 /* Maximum links discovered from one HTML page */
-const MAX_LINKS_PER_PAGE = 500;
-
+const MAX_LINKS_PER_PAGE = 1000;
 
 /* =========================================================================
    PRIORITY KEYWORDS
@@ -157,40 +146,30 @@ const PRIORITY_KEYWORDS = [
   "bursar"
 ];
 
-
 /* =========================================================================
    EXCLUDED PATHS
    ========================================================================= */
 
 const EXCLUDED_PATH_PATTERNS =
-  /(?:^|\/)(?:login|signin|sign-in|logon|portal|admin|wp-admin|cpanel|dashboard|logout)(?:\/|$)/i;
-
+  /(?:^|/)(?:login|signin|sign-in|logon|portal|admin|wp-admin|cpanel|dashboard|logout)(?:/|$)/i;
 
 /* =========================================================================
    FILE TYPES
    ========================================================================= */
 
 /*
- * These are document links that we may discover.
- *
- * PDF is the most important document format for institutional payment
- * information.
+ * More permissive document extension check, allowing query strings.
  */
 const DOCUMENT_EXTENSIONS =
-  /\.(pdf|doc|docx|xls|xlsx|csv|txt)$/i;
-
+  /.(pdf|doc|docx|xls|xlsx|csv|txt)(?:$|?)/i;
 
 /* =========================================================================
    CRAWL TIME
    ========================================================================= */
 
 function crawlTimeExceeded(startTime) {
-  return (
-    Date.now() - startTime >=
-    MAX_CRAWL_TIME_MS
-  );
+  return Date.now() - startTime >= MAX_CRAWL_TIME_MS;
 }
-
 
 /* =========================================================================
    URL NORMALISATION
@@ -200,14 +179,8 @@ function normaliseUrl(url) {
   try {
     var parsed = new URL(url);
 
-    /*
-     * Fragments do not represent separate server pages.
-     */
     parsed.hash = "";
 
-    /*
-     * Remove tracking parameters so the same page is not crawled repeatedly.
-     */
     [
       "utm_source",
       "utm_medium",
@@ -222,36 +195,24 @@ function normaliseUrl(url) {
       parsed.searchParams.delete(param);
     });
 
-    /*
-     * Remove trailing slash except from homepage.
-     */
     if (parsed.pathname.length > 1) {
-      parsed.pathname =
-        parsed.pathname.replace(/\/+$/, "");
+      parsed.pathname = parsed.pathname.replace(//+$/, "");
     }
 
     return parsed.toString();
-
   } catch (e) {
     return null;
   }
 }
 
-
 /* =========================================================================
    URL SAFETY
    ========================================================================= */
 
-function isCrawlableUrl(
-  url,
-  institution
-) {
+function isCrawlableUrl(url, institution) {
   try {
     var parsed = new URL(url);
 
-    /*
-     * HTTP and HTTPS only.
-     */
     if (
       parsed.protocol !== "https:" &&
       parsed.protocol !== "http:"
@@ -259,190 +220,117 @@ function isCrawlableUrl(
       return false;
     }
 
-    /*
-     * NEVER leave the institution's approved host/domain.
-     */
-    if (
-      !isSameInstitutionHost(
-        parsed.hostname,
-        institution.domain
-      )
-    ) {
+    if (!isSameInstitutionHost(parsed.hostname, institution.domain)) {
       return false;
     }
 
-    /*
-     * Do not enter login/admin/portal areas.
-     */
-    if (
-      EXCLUDED_PATH_PATTERNS.test(
-        parsed.pathname
-      )
-    ) {
+    if (EXCLUDED_PATH_PATTERNS.test(parsed.pathname)) {
       return false;
     }
 
     return true;
-
   } catch (e) {
     return false;
   }
 }
 
-
 /* =========================================================================
    FETCH
    ========================================================================= */
 
-async function fetchWithTimeout(
-  url,
-  timeoutMs
-) {
-  var controller =
-    new AbortController();
+async function fetchWithTimeout(url, timeoutMs) {
+  var controller = new AbortController();
 
-  var timer =
-    setTimeout(function () {
-      controller.abort();
-    }, timeoutMs);
+  var timer = setTimeout(function () {
+    controller.abort();
+  }, timeoutMs);
 
   try {
     return await fetch(url, {
       signal: controller.signal,
-
       redirect: "follow",
-
       headers: {
         "User-Agent":
-          "CampusVerify-Crawler/5.0 (+official institutional verification)"
+          "CampusVerify-Crawler/6.0 (+official institutional verification)"
       }
     });
-
   } finally {
     clearTimeout(timer);
   }
 }
 
-
 /* =========================================================================
    SAFE RESPONSE READER
    ========================================================================= */
 
-async function readResponseSafely(
-  response
-) {
-  var contentLength =
-    response.headers.get(
-      "content-length"
-    );
+async function readResponseSafely(response) {
+  var contentLength = response.headers.get("content-length");
 
-  if (
-    contentLength &&
-    Number(contentLength) >
-      MAX_RESPONSE_BYTES
-  ) {
+  if (contentLength && Number(contentLength) > MAX_RESPONSE_BYTES) {
     return null;
   }
 
-  var buffer =
-    await response.arrayBuffer();
+  var buffer = await response.arrayBuffer();
 
-  if (
-    buffer.byteLength >
-    MAX_RESPONSE_BYTES
-  ) {
+  if (buffer.byteLength > MAX_RESPONSE_BYTES) {
     return null;
   }
 
   return Buffer.from(buffer);
 }
 
-
 /* =========================================================================
    CONTENT TYPE
    ========================================================================= */
 
-function getContentType(
-  response
-) {
-  return (
-    response.headers.get(
-      "content-type"
-    ) || ""
-  ).toLowerCase();
+function getContentType(response) {
+  return (response.headers.get("content-type") || "").toLowerCase();
 }
 
-
-function isPdfResponse(
-  response,
-  url
-) {
-  var contentType =
-    getContentType(response);
+function isPdfResponse(response, url) {
+  var contentType = getContentType(response);
 
   return (
-    contentType.indexOf(
-      "application/pdf"
-    ) !== -1 ||
-    /\.pdf(?:$|\?)/i.test(url)
+    contentType.indexOf("application/pdf") !== -1 ||
+    /.pdf(?:$|?)/i.test(url)
   );
 }
 
-
-function isHtmlResponse(
-  response
-) {
-  var contentType =
-    getContentType(response);
+function isHtmlResponse(response) {
+  var contentType = getContentType(response);
 
   return (
-    contentType.indexOf(
-      "text/html"
-    ) !== -1 ||
-    contentType.indexOf(
-      "application/xhtml+xml"
-    ) !== -1
+    contentType.indexOf("text/html") !== -1 ||
+    contentType.indexOf("application/xhtml+xml") !== -1
   );
 }
-
 
 /* =========================================================================
-   HTML LINK DISCOVERY
+   HTML LINK DISCOVERY (STRENGTHENED)
    ========================================================================= */
 
-function discoverLinks(
-  html,
-  pageUrl,
-  institution
-) {
+function discoverLinks(html, pageUrl, institution) {
+  /*
+   * Match <a> tags with href.
+   */
   var linkRegex =
-    /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    /<a\b[^>]*hrefs*=s*["']([^"']+)["'][^>]*>([sS]*?)</a>/gi;
 
   var found = [];
   var seen = new Set();
-
   var match;
 
-  while (
-    (match = linkRegex.exec(html)) !== null
-  ) {
-    if (
-      found.length >=
-      MAX_LINKS_PER_PAGE
-    ) {
+  while ((match = linkRegex.exec(html)) !== null) {
+    if (found.length >= MAX_LINKS_PER_PAGE) {
       break;
     }
 
-    var href =
-      (match[1] || "").trim();
+    var href = (match[1] || "").trim();
 
     if (!href) {
       continue;
     }
 
-    /*
-     * Ignore non-web links.
-     */
     if (
       /^javascript:/i.test(href) ||
       /^mailto:/i.test(href) ||
@@ -452,46 +340,31 @@ function discoverLinks(
       continue;
     }
 
-    /*
-     * Ignore fragment-only links.
-     */
     if (href.charAt(0) === "#") {
       continue;
     }
 
-    var anchorText =
-      (match[2] || "")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase();
+    var anchorText = (match[2] || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/s+/g, " ")
+      .trim()
+      .toLowerCase();
 
     var resolved;
 
     try {
-      resolved =
-        new URL(
-          href,
-          pageUrl
-        ).toString();
-
+      resolved = new URL(href, pageUrl).toString();
     } catch (e) {
       continue;
     }
 
-    var normalised =
-      normaliseUrl(resolved);
+    var normalised = normaliseUrl(resolved);
 
     if (!normalised) {
       continue;
     }
 
-    if (
-      !isCrawlableUrl(
-        normalised,
-        institution
-      )
-    ) {
+    if (!isCrawlableUrl(normalised, institution)) {
       continue;
     }
 
@@ -504,56 +377,37 @@ function discoverLinks(
     var parsed;
 
     try {
-      parsed =
-        new URL(normalised);
+      parsed = new URL(normalised);
     } catch (e) {
       continue;
     }
 
-    var path =
-      parsed.pathname.toLowerCase();
-
+    var path = parsed.pathname.toLowerCase();
     var score = 0;
 
-    /*
-     * Score useful words in both:
-     * - URL path
-     * - anchor text
-     */
-    PRIORITY_KEYWORDS.forEach(
-      function (keyword) {
-        if (
-          path.indexOf(keyword) !== -1
-        ) {
-          score += 3;
-        }
-
-        if (
-          anchorText.indexOf(keyword) !== -1
-        ) {
-          score += 2;
-        }
+    PRIORITY_KEYWORDS.forEach(function (keyword) {
+      if (path.indexOf(keyword) !== -1) {
+        score += 3;
       }
-    );
+      if (anchorText.indexOf(keyword) !== -1) {
+        score += 2;
+      }
+    });
 
-    /*
-     * Documents receive extra priority.
-     */
-    if (
-      DOCUMENT_EXTENSIONS.test(path)
-    ) {
+    if (DOCUMENT_EXTENSIONS.test(path)) {
       score += 10;
     }
 
-    /*
-     * Payment/finance pages are particularly important.
-     */
-    if (
-      /bank|payment|fee|account|finance|registration/i.test(
-        path
-      )
-    ) {
+    if (/bank|payment|fee|account|finance|registration/i.test(path)) {
       score += 5;
+    }
+
+    /*
+     * Boost links that look like documents even if extension is hidden
+     * behind query params.
+     */
+    if (/download|document|file|pdf/i.test(path)) {
+      score += 3;
     }
 
     found.push({
@@ -562,9 +416,6 @@ function discoverLinks(
     });
   }
 
-  /*
-   * Highest-value links first.
-   */
   found.sort(function (a, b) {
     return b.score - a.score;
   });
@@ -572,15 +423,11 @@ function discoverLinks(
   return found;
 }
 
-
 /* =========================================================================
    CANONICAL URL
    ========================================================================= */
 
-function extractCanonicalUrl(
-  html,
-  pageUrl
-) {
+function extractCanonicalUrl(html, pageUrl) {
   var match =
     html.match(
       /<link\b[^>]*rel=["'][^"']*canonical[^"']*["'][^>]*href=["']([^"']+)["']/i
@@ -595,33 +442,18 @@ function extractCanonicalUrl(
 
   try {
     return normaliseUrl(
-      new URL(
-        match[1],
-        pageUrl
-      ).toString()
+      new URL(match[1], pageUrl).toString()
     );
-
   } catch (e) {
     return null;
   }
 }
 
-
 /* =========================================================================
    SITEMAP DISCOVERY
    ========================================================================= */
 
-/*
- * This does NOT search the wider internet.
- *
- * If the institution itself exposes /sitemap.xml, it is still part of the
- * institution's own website and can be used to discover pages.
- */
-async function discoverSitemap(
-  homepage,
-  institution,
-  startTime
-) {
+async function discoverSitemap(homepage, institution, startTime) {
   if (crawlTimeExceeded(startTime)) {
     return [];
   }
@@ -629,75 +461,45 @@ async function discoverSitemap(
   var base;
 
   try {
-    base =
-      new URL(homepage);
-
+    base = new URL(homepage);
   } catch (e) {
     return [];
   }
 
-  var sitemapUrl =
-    base.origin +
-    "/sitemap.xml";
+  var sitemapUrl = base.origin + "/sitemap.xml";
 
-  if (
-    !isCrawlableUrl(
-      sitemapUrl,
-      institution
-    )
-  ) {
+  if (!isCrawlableUrl(sitemapUrl, institution)) {
     return [];
   }
 
   try {
-    var response =
-      await fetchWithTimeout(
-        sitemapUrl,
-        FETCH_TIMEOUT_MS
-      );
+    var response = await fetchWithTimeout(sitemapUrl, FETCH_TIMEOUT_MS);
 
     if (!response.ok) {
       return [];
     }
 
-    var buffer =
-      await readResponseSafely(
-        response
-      );
+    var buffer = await readResponseSafely(response);
 
     if (!buffer) {
       return [];
     }
 
-    var xml =
-      buffer.toString("utf8");
+    var xml = buffer.toString("utf8");
 
     var urls = [];
     var seen = new Set();
-
-    var regex =
-      /<loc>\s*([^<]+)\s*<\/loc>/gi;
-
+    var regex = /<loc>s*([^<]+)s*</loc>/gi;
     var match;
 
-    while (
-      (match = regex.exec(xml)) !== null
-    ) {
-      var url =
-        normaliseUrl(
-          match[1].trim()
-        );
+    while ((match = regex.exec(xml)) !== null) {
+      var url = normaliseUrl(match[1].trim());
 
       if (!url) {
         continue;
       }
 
-      if (
-        !isCrawlableUrl(
-          url,
-          institution
-        )
-      ) {
+      if (!isCrawlableUrl(url, institution)) {
         continue;
       }
 
@@ -712,46 +514,29 @@ async function discoverSitemap(
         score: 40
       });
 
-      /*
-       * Don't let a massive sitemap overwhelm the crawler.
-       */
       if (urls.length >= 1000) {
         break;
       }
     }
 
     return urls;
-
   } catch (err) {
     return [];
   }
 }
 
-
 /* =========================================================================
    LIST ITEM
    ========================================================================= */
 
-function addItem(
-  list,
-  value,
-  source,
-  seenKey
-) {
+function addItem(list, value, source, seenKey) {
   if (!value) {
     return;
   }
 
-  var key =
-    String(
-      seenKey || value
-    )
-      .trim()
-      .toLowerCase();
+  var key = String(seenKey || value).trim().toLowerCase();
 
-  if (
-    list._seen.has(key)
-  ) {
+  if (list._seen.has(key)) {
     return;
   }
 
@@ -763,87 +548,43 @@ function addItem(
   });
 }
 
-
 /* =========================================================================
    PAYMENT RECORD
    ========================================================================= */
 
-function addPaymentRecord(
-  list,
-  record
-) {
-  if (
-    !record ||
-    !record.accountNumber
-  ) {
+function addPaymentRecord(list, record) {
+  if (!record || !record.accountNumber) {
     return;
   }
 
-  var accountNumber =
-    String(
-      record.accountNumber
-    ).replace(/\D/g, "");
+  var accountNumber = String(record.accountNumber).replace(/D/g, "");
 
   if (!accountNumber) {
     return;
   }
 
-  /*
-   * Same account on multiple pages = one payment record.
-   */
-  var existing =
-    list.find(function (item) {
-      var rec =
-        item && item.value
-          ? item.value
-          : item;
-
-      return (
-        rec &&
-        String(
-          rec.accountNumber || ""
-        ).replace(/\D/g, "") ===
-          accountNumber
-      );
-    });
+  var existing = list.find(function (item) {
+    var rec = item && item.value ? item.value : item;
+    return (
+      rec &&
+      String(rec.accountNumber || "").replace(/D/g, "") === accountNumber
+    );
+  });
 
   if (existing) {
-    var existingRecord =
-      existing.value || existing;
+    var existingRecord = existing.value || existing;
 
-    /*
-     * Preserve richer evidence from another page.
-     */
-    if (
-      !existingRecord.bankName &&
-      record.bankName
-    ) {
-      existingRecord.bankName =
-        record.bankName;
+    if (!existingRecord.bankName && record.bankName) {
+      existingRecord.bankName = record.bankName;
     }
-
-    if (
-      !existingRecord.accountName &&
-      record.accountName
-    ) {
-      existingRecord.accountName =
-        record.accountName;
+    if (!existingRecord.accountName && record.accountName) {
+      existingRecord.accountName = record.accountName;
     }
-
-    if (
-      !existingRecord.branch &&
-      record.branch
-    ) {
-      existingRecord.branch =
-        record.branch;
+    if (!existingRecord.branch && record.branch) {
+      existingRecord.branch = record.branch;
     }
-
-    if (
-      !existingRecord.context &&
-      record.context
-    ) {
-      existingRecord.context =
-        record.context;
+    if (!existingRecord.context && record.context) {
+      existingRecord.context = record.context;
     }
 
     return;
@@ -855,161 +596,68 @@ function addPaymentRecord(
   });
 }
 
-
 /* =========================================================================
    EXTRACT TEXT FROM HTML
    ========================================================================= */
 
-function htmlToText(
-  html
-) {
+function htmlToText(html) {
   return html
     .replace(
-      /<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi,
+      /<(script|style|noscript|svg)[sS]*?</\u0001>/gi,
       " "
     )
-    .replace(
-      /<[^>]+>/g,
-      " "
-    )
-    .replace(
-      /&nbsp;/gi,
-      " "
-    )
-    .replace(
-      /&amp;/gi,
-      "&"
-    )
-    .replace(
-      /&quot;/gi,
-      '"'
-    )
-    .replace(
-      /&#39;/gi,
-      "'"
-    )
-    .replace(
-      /\s+/g,
-      " "
-    )
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/s+/g, " ")
     .trim();
 }
-
 
 /* =========================================================================
    PROCESS HTML
    ========================================================================= */
 
-function processHtmlPage(
-  html,
-  pageUrl,
-  institution,
-  itemLists
-) {
+function processHtmlPage(html, pageUrl, institution, itemLists) {
   if (!html) {
     return [];
   }
 
-  /*
-   * IMPORTANT:
-   *
-   * Run extraction against visible-ish text as well as HTML.
-   *
-   * This helps when a number is split by markup.
-   */
-  var text =
-    htmlToText(html);
+  var text = htmlToText(html);
 
-  extractPhones(
-    text
-  ).forEach(function (phone) {
-    addItem(
-      itemLists.phones,
-      phone,
-      pageUrl,
-      phone
-    );
+  extractPhones(text).forEach(function (phone) {
+    addItem(itemLists.phones, phone, pageUrl, phone);
   });
 
-  extractEmails(
-    text
-  ).forEach(function (email) {
-    addItem(
-      itemLists.emails,
-      email,
-      pageUrl,
-      email
-    );
+  extractEmails(text).forEach(function (email) {
+    addItem(itemLists.emails, email, pageUrl, email);
   });
 
-  extractBanks(
-    text
-  ).forEach(function (bank) {
-    addItem(
-      itemLists.bankNames,
-      bank,
-      pageUrl,
-      bank
-    );
+  extractBanks(text).forEach(function (bank) {
+    addItem(itemLists.bankNames, bank, pageUrl, bank);
   });
 
-  var pageTitle =
-    extractTitle(html);
+  var pageTitle = extractTitle(html);
 
-  /*
-   * Payment records MUST come from the actual source text.
-   */
-  extractPaymentRecords(
-    text,
-    pageUrl,
-    pageTitle
-  ).forEach(function (record) {
-    addPaymentRecord(
-      itemLists.paymentRecords,
-      record
-    );
+  extractPaymentRecords(text, pageUrl, pageTitle).forEach(function (record) {
+    addPaymentRecord(itemLists.paymentRecords, record);
   });
 
-  extractPaymentInstructions(
-    text
-  ).forEach(function (instruction) {
+  extractPaymentInstructions(text).forEach(function (instruction) {
     addItem(
       itemLists.paymentInstructions,
       instruction,
       pageUrl,
-      instruction
-        .trim()
-        .toLowerCase()
+      instruction.trim().toLowerCase()
     );
   });
 
-  /*
-   * Discover more official pages.
-   */
-  var discovered =
-    discoverLinks(
-      html,
-      pageUrl,
-      institution
-    );
+  var discovered = discoverLinks(html, pageUrl, institution);
 
-  /*
-   * Follow canonical URL only when it remains on the approved institution
-   * host/domain.
-   */
-  var canonical =
-    extractCanonicalUrl(
-      html,
-      pageUrl
-    );
+  var canonical = extractCanonicalUrl(html, pageUrl);
 
-  if (
-    canonical &&
-    isCrawlableUrl(
-      canonical,
-      institution
-    )
-  ) {
+  if (canonical && isCrawlableUrl(canonical, institution)) {
     discovered.push({
       url: canonical,
       score: 20
@@ -1019,97 +667,56 @@ function processHtmlPage(
   return discovered;
 }
 
-
 /* =========================================================================
-   BASIC DOCUMENT TEXT EXTRACTION (FALLBACK ONLY)
+   BASIC DOCUMENT TEXT EXTRACTION (FALLBACK)
    ========================================================================= */
 
-/*
- * NOTE:
- *
- * This function is intentionally conservative and is now used ONLY as a
- * fallback when real PDF parsing (pdf-parse) fails or the document isn't
- * a PDF at all (e.g. .doc/.txt).
- *
- * It is NOT a complete PDF parser. Most real-world PDFs compress their
- * text streams (FlateDecode), so this raw-bytes approach usually finds
- * nothing useful on an actual PDF — that's why pdf-parse is used first
- * for PDFs, and this only catches the leftover edge cases.
- */
-function extractPossibleDocumentText(
-  buffer
-) {
+function extractPossibleDocumentText(buffer) {
   if (!buffer) {
     return "";
   }
 
-  var raw =
-    buffer.toString("latin1");
+  var raw = buffer.toString("latin1");
 
-  /*
-   * Decode some common PDF escaped strings.
-   */
-  raw =
-    raw
-      .replace(
-        /\\([()\\])/g,
-        "$1"
-      )
-      .replace(
-        /\\n/g,
-        "\n"
-      )
-      .replace(
-        /\\r/g,
-        "\n"
-      )
-      .replace(
-        /\\t/g,
-        " "
-      );
+  raw = raw
+    .replace(/\\([()\\])/g, "$1")
+    .replace(/\
+/g, "
+")
+    .replace(/\\r/g, "
+")
+    .replace(/\\t/g, " ");
 
-  /*
-   * Collect printable sequences.
-   */
-  var matches =
-    raw.match(
-      /[\x20-\x7E]{3,}/g
-    ) || [];
+  var matches = raw.match(/[ -~]{3,}/g) || [];
 
-  return matches
-    .join(" ")
-    .replace(
-      /\s+/g,
-      " "
-    )
-    .trim();
+  return matches.join(" ").replace(/s+/g, " ").trim();
 }
 
-
 /* =========================================================================
-   PROCESS DOCUMENT
-   -----------------------------------------------------------------------
-   Now async: real PDFs go through pdf-parse first (handles compressed
-   text streams properly). If that fails for any reason, or the file
-   isn't actually a PDF, we fall back to the old raw-bytes scan so
-   .doc/.txt/.csv documents still get *something* extracted.
+   PROCESS DOCUMENT (STRENGTHENED)
    ========================================================================= */
 
-async function processDocument(
-  buffer,
-  pageUrl,
-  itemLists,
-  isPdf
-) {
-  var text;
+async function processDocument(buffer, pageUrl, itemLists, isPdf) {
+  var text = "";
 
   if (isPdf) {
     try {
       var parsed = await pdfParse(buffer);
       text = (parsed && parsed.text) || "";
+
+      if (!text || text.trim().length < 50) {
+        // Very short text: possibly scanned PDF
+        console.log(
+          "PDF text very short, using raw fallback:",
+          pageUrl,
+          "length:",
+          text ? text.length : 0
+        );
+        text = extractPossibleDocumentText(buffer) || text;
+      }
     } catch (err) {
       console.error(
-        "CampusVerify PDF parse failed, falling back:",
+        "CampusVerify PDF parse failed, using fallback:",
         pageUrl,
         err && err.message
       );
@@ -1119,111 +726,66 @@ async function processDocument(
     text = extractPossibleDocumentText(buffer);
   }
 
-  if (!text) {
+  if (!text || text.trim().length === 0) {
+    console.log("No usable text extracted from document:", pageUrl);
     return;
   }
 
-  extractPhones(
-    text
-  ).forEach(function (phone) {
-    addItem(
-      itemLists.phones,
-      phone,
+  // Optional debug: log if we see long digit sequences
+  if (/d{9,13}/.test(text)) {
+    console.log(
+      "Document with possible account numbers:",
       pageUrl,
-      phone
+      "sample:",
+      text.slice(0, 500)
     );
+  }
+
+  extractPhones(text).forEach(function (phone) {
+    addItem(itemLists.phones, phone, pageUrl, phone);
   });
 
-  extractEmails(
-    text
-  ).forEach(function (email) {
-    addItem(
-      itemLists.emails,
-      email,
-      pageUrl,
-      email
-    );
+  extractEmails(text).forEach(function (email) {
+    addItem(itemLists.emails, email, pageUrl, email);
   });
 
-  extractBanks(
-    text
-  ).forEach(function (bank) {
-    addItem(
-      itemLists.bankNames,
-      bank,
-      pageUrl,
-      bank
-    );
+  extractBanks(text).forEach(function (bank) {
+    addItem(itemLists.bankNames, bank, pageUrl, bank);
   });
 
-  var title =
-    pageUrl
-      .split("/")
-      .pop() ||
-    "Official document";
+  var title = pageUrl.split("/").pop() || "Official document";
 
-  extractPaymentRecords(
-    text,
-    pageUrl,
-    title
-  ).forEach(function (record) {
-    addPaymentRecord(
-      itemLists.paymentRecords,
-      record
-    );
+  extractPaymentRecords(text, pageUrl, title).forEach(function (record) {
+    addPaymentRecord(itemLists.paymentRecords, record);
   });
 
-  extractPaymentInstructions(
-    text
-  ).forEach(function (instruction) {
+  extractPaymentInstructions(text).forEach(function (instruction) {
     addItem(
       itemLists.paymentInstructions,
       instruction,
       pageUrl,
-      instruction
-        .trim()
-        .toLowerCase()
+      instruction.trim().toLowerCase()
     );
   });
 }
-
 
 /* =========================================================================
    FETCH + PROCESS ONE URL
    ========================================================================= */
 
-async function fetchPage(
-  url,
-  institution,
-  itemLists,
-  pageStatus
-) {
+async function fetchPage(url, institution, itemLists, pageStatus) {
   try {
-    var parsed =
-      new URL(url);
+    var parsed = new URL(url);
 
-    if (
-      !isSameInstitutionHost(
-        parsed.hostname,
-        institution.domain
-      )
-    ) {
+    if (!isSameInstitutionHost(parsed.hostname, institution.domain)) {
       return [];
     }
 
-    if (
-      EXCLUDED_PATH_PATTERNS.test(
-        parsed.pathname
-      )
-    ) {
+    if (EXCLUDED_PATH_PATTERNS.test(parsed.pathname)) {
       return [];
     }
 
-    var response =
-      await fetchWithTimeout(
-        url,
-        FETCH_TIMEOUT_MS
-      );
+    var response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
 
     if (!response.ok) {
       pageStatus.push({
@@ -1235,10 +797,7 @@ async function fetchPage(
       return [];
     }
 
-    var buffer =
-      await readResponseSafely(
-        response
-      );
+    var buffer = await readResponseSafely(response);
 
     if (!buffer) {
       pageStatus.push({
@@ -1249,21 +808,14 @@ async function fetchPage(
       return [];
     }
 
-    var contentType =
-      getContentType(response);
+    var contentType = getContentType(response);
 
-    /*
-     * PDF/document.
-     */
     if (
-      isPdfResponse(
-        response,
-        url
-      ) ||
-      DOCUMENT_EXTENSIONS.test(
-        parsed.pathname
-      )
+      isPdfResponse(response, url) ||
+      DOCUMENT_EXTENSIONS.test(parsed.pathname)
     ) {
+      console.log("Processing document/PDF:", url);
+
       await processDocument(
         buffer,
         url,
@@ -1281,14 +833,7 @@ async function fetchPage(
       return [];
     }
 
-    /*
-     * Ignore images, videos, ZIP files, etc.
-     */
-    if (
-      !isHtmlResponse(
-        response
-      )
-    ) {
+    if (!isHtmlResponse(response)) {
       pageStatus.push({
         url: url,
         status: "skipped",
@@ -1299,53 +844,36 @@ async function fetchPage(
       return [];
     }
 
-    var html =
-      buffer.toString(
-        "utf8"
-      );
+    var html = buffer.toString("utf8");
 
-    var discovered =
-      processHtmlPage(
-        html,
-        url,
-        institution,
-        itemLists
-      );
+    var discovered = processHtmlPage(html, url, institution, itemLists);
 
     pageStatus.push({
       url: url,
       status: "ok",
       type: "html",
       contentType: contentType,
-      linksDiscovered:
-        discovered.length
+      linksDiscovered: discovered.length
     });
 
     return discovered;
-
   } catch (err) {
-    var timedOut =
-      err &&
-      err.name === "AbortError";
+    var timedOut = err && err.name === "AbortError";
 
     console.error(
       "CampusVerify crawler error:",
       url,
-      err &&
-        err.message
+      err && err.message
     );
 
     pageStatus.push({
       url: url,
-      status: timedOut
-        ? "timeout"
-        : "unreachable"
+      status: timedOut ? "timeout" : "unreachable"
     });
 
     return [];
   }
 }
-
 
 /* =========================================================================
    ITEM LISTS
@@ -1360,95 +888,52 @@ function createItemLists() {
     paymentInstructions: []
   };
 
-  Object.keys(
-    lists
-  ).forEach(function (key) {
-    lists[key]._seen =
-      new Set();
+  Object.keys(lists).forEach(function (key) {
+    lists[key]._seen = new Set();
   });
 
   return lists;
 }
 
-
 /* =========================================================================
    CRAWL ENGINE
    ========================================================================= */
 
-async function crawlInstitution(
-  institution,
-  homepage,
-  startTime
-) {
-  var itemLists =
-    createItemLists();
-
+async function crawlInstitution(institution, homepage, startTime) {
+  var itemLists = createItemLists();
   var pageStatus = [];
-
   var queue = [];
+  var discovered = new Set();
+  var visited = new Set();
 
-  var discovered =
-    new Set();
-
-  var visited =
-    new Set();
-
-
-  /* -----------------------------------------------------------------------
-     QUEUE
-     ----------------------------------------------------------------------- */
-
-  function enqueue(
-    url,
-    depth,
-    score
-  ) {
+  function enqueue(url, depth, score) {
     if (!url) {
       return;
     }
 
-    if (
-      depth >
-      MAX_CRAWL_DEPTH
-    ) {
+    if (depth > MAX_CRAWL_DEPTH) {
       return;
     }
 
-    var normalised =
-      normaliseUrl(url);
+    var normalised = normaliseUrl(url);
 
     if (!normalised) {
       return;
     }
 
-    if (
-      !isCrawlableUrl(
-        normalised,
-        institution
-      )
-    ) {
+    if (!isCrawlableUrl(normalised, institution)) {
       return;
     }
 
-    if (
-      discovered.has(
-        normalised
-      )
-    ) {
+    if (discovered.has(normalised)) {
       return;
     }
 
-    if (
-      visited.has(
-        normalised
-      )
-    ) {
+    if (visited.has(normalised)) {
       return;
     }
 
-    discovered.add(
-      normalised
-    );
+    discovered.add(normalised);
 
     queue.push({
       url: normalised,
@@ -1456,427 +941,187 @@ async function crawlInstitution(
       score: score || 0
     });
 
-    /*
-     * Keep useful pages near the front.
-     */
     queue.sort(function (a, b) {
-      if (
-        b.score !== a.score
-      ) {
-        return (
-          b.score -
-          a.score
-        );
+      if (b.score !== a.score) {
+        return b.score - a.score;
       }
-
-      return (
-        a.depth -
-        b.depth
-      );
+      return a.depth - b.depth;
     });
   }
 
+  enqueue(homepage, 0, 1000);
 
-  /* -----------------------------------------------------------------------
-     INITIAL PAGE
-     ----------------------------------------------------------------------- */
-
-  enqueue(
-    homepage,
-    0,
-    1000
-  );
-
-
-  /* -----------------------------------------------------------------------
-     CONFIGURED SEEDS
-     ----------------------------------------------------------------------- */
-
-  (
-    institution.seedPages ||
-    []
-  ).forEach(function (url) {
-    enqueue(
-      url,
-      0,
-      900
-    );
+  (institution.seedPages || []).forEach(function (url) {
+    enqueue(url, 0, 900);
   });
 
+  var sitemapUrls = await discoverSitemap(homepage, institution, startTime);
 
-  /* -----------------------------------------------------------------------
-     INSTITUTION SITEMAP
-     ----------------------------------------------------------------------- */
-
-  var sitemapUrls =
-    await discoverSitemap(
-      homepage,
-      institution,
-      startTime
-    );
-
-  sitemapUrls.forEach(
-    function (item) {
-      enqueue(
-        item.url,
-        0,
-        item.score
-      );
-    }
-  );
-
-
-  /* -----------------------------------------------------------------------
-     MAIN LOOP
-     ----------------------------------------------------------------------- */
+  sitemapUrls.forEach(function (item) {
+    enqueue(item.url, 0, item.score);
+  });
 
   while (
     queue.length > 0 &&
-    visited.size <
-      MAX_PAGES_PER_INSTITUTION &&
-    !crawlTimeExceeded(
-      startTime
-    )
+    visited.size < MAX_PAGES_PER_INSTITUTION &&
+    !crawlTimeExceeded(startTime)
   ) {
-    var current =
-      queue.shift();
+    var current = queue.shift();
 
     if (!current) {
       break;
     }
 
-    if (
-      visited.has(
-        current.url
-      )
-    ) {
+    if (visited.has(current.url)) {
       continue;
     }
 
-    /*
-     * Mark before fetching so failed URLs are not repeatedly queued.
-     */
-    visited.add(
-      current.url
+    visited.add(current.url);
+
+    var newLinks = await fetchPage(
+      current.url,
+      institution,
+      itemLists,
+      pageStatus
     );
 
-    var newLinks =
-      await fetchPage(
-        current.url,
-        institution,
-        itemLists,
-        pageStatus
-      );
-
-    newLinks.forEach(
-      function (item) {
-        if (
-          !item ||
-          !item.url
-        ) {
-          return;
-        }
-
-        enqueue(
-          item.url,
-          current.depth + 1,
-          item.score || 0
-        );
+    newLinks.forEach(function (item) {
+      if (!item || !item.url) {
+        return;
       }
-    );
+
+      enqueue(item.url, current.depth + 1, item.score || 0);
+    });
   }
 
+  var timeLimitReached = crawlTimeExceeded(startTime);
+  var pageLimitReached = visited.size >= MAX_PAGES_PER_INSTITUTION;
+  var pendingLinks = queue.length;
 
-  /* -----------------------------------------------------------------------
-     STATS
-     ----------------------------------------------------------------------- */
+  var successfulPages = pageStatus.filter(function (item) {
+    return item.status === "ok";
+  });
 
-  var timeLimitReached =
-    crawlTimeExceeded(
-      startTime
-    );
+  var successfulSources = successfulPages.map(function (item) {
+    return item.url;
+  });
 
-  var pageLimitReached =
-    visited.size >=
-    MAX_PAGES_PER_INSTITUTION;
-
-  var pendingLinks =
-    queue.length;
-
-  var successfulPages =
-    pageStatus.filter(
-      function (item) {
-        return (
-          item.status ===
-          "ok"
-        );
-      }
-    );
-
-  var successfulSources =
-    successfulPages.map(
-      function (item) {
-        return item.url;
-      }
-    );
-
-
-  /*
-   * If the queue still has URLs, there was more work available.
-   */
   var crawlEndedNaturally =
-    !timeLimitReached &&
-    !pageLimitReached &&
-    pendingLinks === 0;
+    !timeLimitReached && !pageLimitReached && pendingLinks === 0;
 
-
-  /*
-   * A crawl can have some failed pages while still being useful.
-   *
-   * Therefore dataComplete is stricter than "we got something".
-   */
-  var failedPages =
-    pageStatus.filter(
-      function (item) {
-        return (
-          item.status ===
-            "unreachable" ||
-          item.status ===
-            "timeout" ||
-          item.status ===
-            "too_large"
-        );
-      }
+  var failedPages = pageStatus.filter(function (item) {
+    return (
+      item.status === "unreachable" ||
+      item.status === "timeout" ||
+      item.status === "too_large"
     );
-
+  });
 
   var dataComplete =
-    crawlEndedNaturally &&
-    failedPages.length === 0;
+    crawlEndedNaturally && failedPages.length === 0;
 
-
-  /*
-   * crawlFailed means the crawler could not successfully process ANY
-   * official page.
-   */
-  var crawlFailed =
-    successfulPages.length === 0;
-
+  var crawlFailed = successfulPages.length === 0;
 
   return {
     items: itemLists,
-
-    pagesCrawled:
-      pageStatus,
-
-    sources:
-      successfulSources,
-
+    pagesCrawled: pageStatus,
+    sources: successfulSources,
     crawlStats: {
-      pagesVisited:
-        visited.size,
-
-      pagesSuccessful:
-        successfulPages.length,
-
-      pagesFailed:
-        failedPages.length,
-
-      pagesPending:
-        pendingLinks,
-
-      maxPages:
-        MAX_PAGES_PER_INSTITUTION,
-
-      maxDepth:
-        MAX_CRAWL_DEPTH,
-
-      maxTimeMs:
-        MAX_CRAWL_TIME_MS,
-
-      timeLimitReached:
-        timeLimitReached,
-
-      pageLimitReached:
-        pageLimitReached,
-
-      crawlEndedNaturally:
-        crawlEndedNaturally,
-
-      dataComplete:
-        dataComplete
+      pagesVisited: visited.size,
+      pagesSuccessful: successfulPages.length,
+      pagesFailed: failedPages.length,
+      pagesPending: pendingLinks,
+      maxPages: MAX_PAGES_PER_INSTITUTION,
+      maxDepth: MAX_CRAWL_DEPTH,
+      maxTimeMs: MAX_CRAWL_TIME_MS,
+      timeLimitReached: timeLimitReached,
+      pageLimitReached: pageLimitReached,
+      crawlEndedNaturally: crawlEndedNaturally,
+      dataComplete: dataComplete
     },
-
-    dataComplete:
-      dataComplete,
-
-    crawlFailed:
-      crawlFailed
+    dataComplete: dataComplete,
+    crawlFailed: crawlFailed
   };
 }
-
 
 /* =========================================================================
    API HANDLER
    ========================================================================= */
 
-module.exports =
-  async function handler(
-    req,
-    res
-  ) {
-    /*
-     * CURRENT ARCHITECTURE:
-     *
-     * script.js identifies the institution first and sends its ID.
-     *
-     * The next script.js upgrade will also send the official website URL,
-     * allowing the frontend/backend flow to be explicitly website-driven.
-     */
-    var institutionId =
-      req.query.institution;
+module.exports = async function handler(req, res) {
+  var institutionId = req.query.institution;
 
-    if (!institutionId) {
-      return res.status(400).json({
-        error:
-          "Missing institution id"
-      });
-    }
+  if (!institutionId) {
+    return res.status(400).json({
+      error: "Missing institution id"
+    });
+  }
 
+  var institution = getInstitutionById(institutionId);
 
-    var institution =
-      getInstitutionById(
-        institutionId
-      );
+  if (!institution) {
+    return res.status(404).json({
+      error: "This institution is not supported yet."
+    });
+  }
 
-    if (!institution) {
-      return res.status(404).json({
-        error:
-          "This institution is not supported yet."
-      });
-    }
+  var homepage =
+    institution.homepage ||
+    "https://" + institution.domain + "/";
 
+  var startTime = Date.now();
 
-    /*
-     * Start from the institution's configured official domain.
-     */
-    var homepage =
-      institution.homepage ||
-      ("https://" +
-      institution.domain +
-      "/");
+  try {
+    var result = await crawlInstitution(institution, homepage, startTime);
 
+    return res.status(200).json({
+      institutionId: institution.id,
+      institutionName: institution.name,
+      domain: institution.domain,
+      status: institution.status,
+      officialUrl: homepage,
+      items: result.items,
+      pagesCrawled: result.pagesCrawled,
+      sources: result.sources,
+      crawlStats: result.crawlStats,
+      dataComplete: result.dataComplete,
+      crawlFailed: result.crawlFailed,
+      checkedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error("CampusVerify crawler fatal error:", err);
 
-    var startTime =
-      Date.now();
-
-
-    try {
-      var result =
-        await crawlInstitution(
-          institution,
-          homepage,
-          startTime
-        );
-
-
-      return res.status(200).json({
-        institutionId:
-          institution.id,
-
-        institutionName:
-          institution.name,
-
-        domain:
-          institution.domain,
-
-        status:
-          institution.status,
-
-        officialUrl:
-          homepage,
-
-        items:
-          result.items,
-
-        pagesCrawled:
-          result.pagesCrawled,
-
-        sources:
-          result.sources,
-
-        crawlStats:
-          result.crawlStats,
-
-        dataComplete:
-          result.dataComplete,
-
-        crawlFailed:
-          result.crawlFailed,
-
-        checkedAt:
-          new Date().toISOString()
-      });
-
-    } catch (err) {
-      console.error(
-        "CampusVerify crawler fatal error:",
-        err
-      );
-
-      return res.status(500).json({
-        error:
-          "The institution website could not be crawled.",
-
-        institutionId:
-          institution.id,
-
-        institutionName:
-          institution.name,
-
-        domain:
-          institution.domain,
-
-        officialUrl:
-          homepage,
-
-        items: {
-          phones: [],
-          emails: [],
-          bankNames: [],
-          paymentRecords: [],
-          paymentInstructions: []
-        },
-
-        sources: [],
-
-        pagesCrawled: [],
-
-        crawlStats: {
-          pagesVisited: 0,
-          pagesSuccessful: 0,
-          pagesFailed: 1,
-          pagesPending: 0,
-          maxPages:
-            MAX_PAGES_PER_INSTITUTION,
-          maxDepth:
-            MAX_CRAWL_DEPTH,
-          maxTimeMs:
-            MAX_CRAWL_TIME_MS,
-          timeLimitReached: false,
-          pageLimitReached: false,
-          crawlEndedNaturally: false,
-          dataComplete: false
-        },
-
-        dataComplete:
-          false,
-
-        crawlFailed:
-          true,
-
-        checkedAt:
-          new Date().toISOString()
-      });
-    }
-  };
+    return res.status(500).json({
+      error: "The institution website could not be crawled.",
+      institutionId: institution.id,
+      institutionName: institution.name,
+      domain: institution.domain,
+      officialUrl: homepage,
+      items: {
+        phones: [],
+        emails: [],
+        bankNames: [],
+        paymentRecords: [],
+        paymentInstructions: []
+      },
+      sources: [],
+      pagesCrawled: [],
+      crawlStats: {
+        pagesVisited: 0,
+        pagesSuccessful: 0,
+        pagesFailed: 1,
+        pagesPending: 0,
+        maxPages: MAX_PAGES_PER_INSTITUTION,
+        maxDepth: MAX_CRAWL_DEPTH,
+        maxTimeMs: MAX_CRAWL_TIME_MS,
+        timeLimitReached: false,
+        pageLimitReached: false,
+        crawlEndedNaturally: false,
+        dataComplete: false
+      },
+      dataComplete: false,
+      crawlFailed: true,
+      checkedAt: new Date().toISOString()
+    });
+  }
+};
