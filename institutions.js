@@ -21,7 +21,10 @@
    homepage, so known-important pages (contact/fees) are covered even if
    the site doesn't link to them prominently. The crawler still discovers
    further pages on its own from the homepage — this list is a head
-   start, not a hard ceiling.
+   start, not a hard ceiling. Can include direct PDF links too, on any
+   subdomain of "domain" — useful when a document with real published
+   evidence (e.g. bank details) lives somewhere the crawler wouldn't
+   otherwise reach in time.
 
    status: "supported" | "pilot" | "partner"
      - "supported" (default): CampusVerify has crawled this institution's
@@ -42,7 +45,10 @@ const INSTITUTIONS = [
     seedPages: [
       "https://web.unilus.ac.zm/contact-us/",
       "https://web.unilus.ac.zm/registation-notice/",
-      "https://web.unilus.ac.zm/fees/"
+      "https://web.unilus.ac.zm/fees/",
+      "https://www.unilus.ac.zm/Documents/JUNE_JULY%202025%20APPLICANTS.pdf",
+      "https://web.unilus.ac.zm/wp-content/uploads/2025/12/UNDERGRADUATE-FEES-ZMW.pdf",
+      "https://web.unilus.ac.zm/wp-content/uploads/2025/12/BACHELOR-OF-SCIENCE-IN-NURSING-USD-FEES-UNILUS-2026.pdf"
     ],
     reportingLinks: [
       { label: "ZICTA Cyber Complaints Portal", url: "https://www.zicta.zm/cyber-complaints" }
@@ -54,7 +60,10 @@ const INSTITUTIONS = [
      status: "supported" (the honest default), and a couple of seedPages
      to help the crawler get started. Nothing else needs to change.
      Only add a "homepage" field if the bare domain doesn't itself work
-     (dead cert, no server) but a subdomain like www./web. does. */
+     (dead cert, no server) but a subdomain like www./web. does. If a
+     specific important document (fees/bank-details PDF) is known and
+     might not be found in time by normal crawling, add its direct URL
+     to seedPages too. */
 ];
 
 function getInstitutionById(id) {
