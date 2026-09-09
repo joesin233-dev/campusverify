@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/crawler.js": {
+      "maxDuration": 60
+    }
+  }
+}
