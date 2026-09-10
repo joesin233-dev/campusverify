@@ -1,5 +1,5 @@
 /* =========================================================================
-   CampusVerify v3.3 — script.js
+   CampusVerify v3.4 — script.js
    -----------------------------------------------------------------------
    Website-first institution verification frontend.
 
@@ -646,6 +646,7 @@
 
     if (existing) {
       existing.hidden = false;
+
       existing.scrollIntoView({
         behavior: "smooth",
         block: "center"
@@ -654,13 +655,10 @@
       return;
     }
 
-    /*
-     * If the existing HTML does not contain a dedicated warning element,
-     * use the Verify error area instead.
-     */
     if (identifyError) {
       identifyError.textContent =
         "Please enter the institution website first.";
+
       identifyError.hidden = false;
     }
 
@@ -685,9 +683,6 @@
       pageName === "report" &&
       !currentInstitutionId
     ) {
-      /*
-       * Keep the user on Verify instead of opening an empty Report Centre.
-       */
       pages.forEach(
         function (page) {
           page.hidden =
@@ -1452,9 +1447,6 @@
       return;
     }
 
-    /*
-     * Prevent duplicate buttons if render logic is triggered more than once.
-     */
     if (
       resultCard.querySelector(
         "[data-action='go-report']"
@@ -1716,9 +1708,6 @@
       ) ||
       "the institution";
 
-    /*
-     * Remember exactly what was checked so the Report Centre CTA can use it.
-     */
     rememberVerification(
       activeCheckType,
       value
@@ -1759,11 +1748,6 @@
       data.checkedAt
     );
 
-    /*
-     * Only incomplete / unable-to-verify results get the direct Report
-     * Centre CTA. A simple complete "not found" result remains a
-     * verification result and is not silently treated as a fraud report.
-     */
     if (incomplete) {
       addReportCentreButton();
     }
@@ -1879,10 +1863,6 @@
           new Date().toISOString()
         );
 
-        /*
-         * A documented scam pattern is stronger than a simple incomplete
-         * verification result, so the existing result is preserved.
-         */
         logVerification(true);
       } else {
         renderResult(
@@ -1946,10 +1926,6 @@
               "'s official pages at this moment. This is not a result — please try again shortly."
           );
 
-          /*
-           * This is a genuine inability to check. Give the student a
-           * reporting route as well, because the institution is known.
-           */
           addReportCentreButton();
 
           return;
@@ -2137,6 +2113,8 @@
                   "</p>"
                 : ""
             );
+
+            addReportCentreButton();
 
             logVerification(true);
 
@@ -2754,90 +2732,456 @@
   var reportClearBtn =
     $("report-clear-btn");
 
+  /* =======================================================================
+     REPORTING JSON LOADER
+     ======================================================================= */
+
   /*
-   * ---------------------------------------------------------------
-   * REPORTING JSON LOADER
-   * ---------------------------------------------------------------
-   *
    * Each supported institution can have its own reporting file:
    *
    * data/reporting/unilus.json
    * data/reporting/zcas.json
    * data/reporting/unza.json
    *
-   * The loader is intentionally tolerant of small schema differences so
-   * adding another institution later does not require rewriting this file.
+   * The loader reads the institution-specific file.
    */
 
   function normaliseReportingData(data) {
-    data =
-      data || {};
-
-    /*
-     * Possible supported shapes:
-     *
-     * {
-     *   contacts: [...]
-     * }
-     *
-     * {
-     *   reportingContacts: [...]
-     * }
-     *
-     * {
-     *   channels: [...]
-     * }
-     *
-     * {
-     *   categories: [...]
-     * }
-     */
+    data = data || {};
 
     var contacts = [];
 
-    if (
-      Array.isArray(
-        data.contacts
-      )
-    ) {
-      contacts =
-        contacts.concat(
-          data.contacts
-        );
+    /* ---------------------------------------------------------------------
+       STANDARD CATEGORY FORMAT
+
+       Example:
+
+       contacts: [
+         {
+           category: "Accounts Department",
+           purpose: "...",
+           phones: [
+             {
+               number: "+260 975 884 829",
+               type: "phone"
+             }
+           ],
+           emails: [
+             "accounts@unilus.ac.zm"
+           ]
+         }
+       ]
+       --------------------------------------------------------------------- */
+
+    if (Array.isArray(data.contacts)) {
+      data.contacts.forEach(function (group) {
+        if (!group) {
+          return;
+        }
+
+        var category =
+          safeText(
+            group.category ||
+            group.department ||
+            group.group ||
+            group.name ||
+            "Official Contact"
+          ).trim();
+
+        var purpose =
+          safeText(
+            group.purpose ||
+            ""
+          ).trim();
+
+        var hours =
+          safeText(
+            group.hours ||
+            ""
+          ).trim();
+
+        var groupSource =
+          safeText(
+            group.source ||
+            group.sourceUrl ||
+            ""
+          ).trim();
+
+        /*
+         * PHONE NUMBERS
+         */
+        if (Array.isArray(group.phones)) {
+          group.phones.forEach(function (phone) {
+            if (!phone) {
+              return;
+            }
+
+            var number =
+              typeof phone === "string"
+                ? phone
+                : (
+                    phone.number ||
+                    phone.value ||
+                    phone.phone ||
+                    ""
+                  );
+
+            number =
+              safeText(number).trim();
+
+            if (!number) {
+              return;
+            }
+
+            contacts.push({
+              category: category,
+              purpose: purpose,
+              hours: hours,
+              type: "phone",
+              value: number,
+              label: "Phone",
+              source:
+                (
+                  typeof phone === "object" &&
+                  (
+                    phone.source ||
+                    phone.sourceUrl
+                  )
+                ) ||
+                groupSource ||
+                ""
+            });
+          });
+        }
+
+        /*
+         * EMAIL ADDRESSES
+         */
+        if (Array.isArray(group.emails)) {
+          group.emails.forEach(function (email) {
+            if (!email) {
+              return;
+            }
+
+            var address =
+              typeof email === "string"
+                ? email
+                : (
+                    email.email ||
+                    email.value ||
+                    ""
+                  );
+
+            address =
+              safeText(address).trim();
+
+            if (!address) {
+              return;
+            }
+
+            contacts.push({
+              category: category,
+              purpose: purpose,
+              hours: hours,
+              type: "email",
+              value: address,
+              label: "Email",
+              source:
+                (
+                  typeof email === "object" &&
+                  (
+                    email.source ||
+                    email.sourceUrl
+                  )
+                ) ||
+                groupSource ||
+                ""
+            });
+          });
+        }
+
+        /*
+         * ALSO SUPPORT SIMPLE DIRECT PHONE / EMAIL FIELDS.
+         */
+        if (group.phone) {
+          contacts.push({
+            category: category,
+            purpose: purpose,
+            hours: hours,
+            type: "phone",
+            value: safeText(
+              group.phone
+            ).trim(),
+            label: "Phone",
+            source: groupSource
+          });
+        }
+
+        if (group.email) {
+          contacts.push({
+            category: category,
+            purpose: purpose,
+            hours: hours,
+            type: "email",
+            value: safeText(
+              group.email
+            ).trim(),
+            label: "Email",
+            source: groupSource
+          });
+        }
+
+        /*
+         * GENERIC SINGLE VALUE.
+         */
+        if (
+          group.value &&
+          !group.phones &&
+          !group.emails &&
+          !group.phone &&
+          !group.email
+        ) {
+          contacts.push({
+            category: category,
+            purpose: purpose,
+            hours: hours,
+            type:
+              group.type ||
+              "other",
+            value: safeText(
+              group.value
+            ).trim(),
+            label:
+              group.label ||
+              "Official Contact",
+            source: groupSource
+          });
+        }
+      });
     }
+
+    /* ---------------------------------------------------------------------
+       REPORTING CONTACTS ALTERNATIVE FORMAT
+       --------------------------------------------------------------------- */
 
     if (
       Array.isArray(
         data.reportingContacts
       )
     ) {
-      contacts =
-        contacts.concat(
-          data.reportingContacts
-        );
+      data.reportingContacts.forEach(
+        function (contact) {
+          if (!contact) {
+            return;
+          }
+
+          /*
+           * If this object contains phones/emails, flatten them.
+           */
+          if (
+            Array.isArray(
+              contact.phones
+            ) ||
+            Array.isArray(
+              contact.emails
+            )
+          ) {
+            var category =
+              safeText(
+                contact.category ||
+                contact.department ||
+                contact.name ||
+                "Official Contact"
+              ).trim();
+
+            var purpose =
+              safeText(
+                contact.purpose ||
+                ""
+              ).trim();
+
+            var hours =
+              safeText(
+                contact.hours ||
+                ""
+              ).trim();
+
+            if (
+              Array.isArray(
+                contact.phones
+              )
+            ) {
+              contact.phones.forEach(
+                function (phone) {
+                  var number =
+                    typeof phone === "string"
+                      ? phone
+                      : (
+                          phone &&
+                          (
+                            phone.number ||
+                            phone.value ||
+                            phone.phone
+                          )
+                        );
+
+                  number =
+                    safeText(
+                      number
+                    ).trim();
+
+                  if (!number) {
+                    return;
+                  }
+
+                  contacts.push({
+                    category:
+                      category,
+                    purpose:
+                      purpose,
+                    hours:
+                      hours,
+                    type:
+                      "phone",
+                    value:
+                      number,
+                    label:
+                      "Phone",
+                    source:
+                      contact.source ||
+                      contact.sourceUrl ||
+                      ""
+                  });
+                }
+              );
+            }
+
+            if (
+              Array.isArray(
+                contact.emails
+              )
+            ) {
+              contact.emails.forEach(
+                function (email) {
+                  var address =
+                    typeof email === "string"
+                      ? email
+                      : (
+                          email &&
+                          (
+                            email.email ||
+                            email.value
+                          )
+                        );
+
+                  address =
+                    safeText(
+                      address
+                    ).trim();
+
+                  if (!address) {
+                    return;
+                  }
+
+                  contacts.push({
+                    category:
+                      category,
+                    purpose:
+                      purpose,
+                    hours:
+                      hours,
+                    type:
+                      "email",
+                    value:
+                      address,
+                    label:
+                      "Email",
+                    source:
+                      contact.source ||
+                      contact.sourceUrl ||
+                      ""
+                  });
+                }
+              );
+            }
+
+            return;
+          }
+
+          /*
+           * Simple:
+           *
+           * {
+           *   category: "...",
+           *   type: "phone",
+           *   value: "..."
+           * }
+           */
+
+          var value =
+            safeText(
+              contact.value ||
+              contact.phone ||
+              contact.email ||
+              ""
+            ).trim();
+
+          if (!value) {
+            return;
+          }
+
+          contacts.push({
+            category:
+              safeText(
+                contact.category ||
+                contact.department ||
+                contact.group ||
+                contact.name ||
+                "Official Contact"
+              ).trim(),
+
+            purpose:
+              safeText(
+                contact.purpose ||
+                ""
+              ).trim(),
+
+            hours:
+              safeText(
+                contact.hours ||
+                ""
+              ).trim(),
+
+            type:
+              contact.type ||
+              contact.kind ||
+              "",
+
+            value:
+              value,
+
+            label:
+              contact.label ||
+              contact.name ||
+              contact.title ||
+              (
+                contact.type === "email"
+                  ? "Email"
+                  : "Phone"
+              ),
+
+            source:
+              contact.source ||
+              contact.sourceUrl ||
+              ""
+          });
+        }
+      );
     }
 
-    if (
-      Array.isArray(
-        data.channels
-      )
-    ) {
-      contacts =
-        contacts.concat(
-          data.channels
-        );
-    }
-
-    /*
-     * Category-based format:
-     *
-     * categories: [
-     *   {
-     *     category: "Accounts",
-     *     contacts: [...]
-     *   }
-     * ]
-     */
+    /* ---------------------------------------------------------------------
+       CATEGORY-BASED ALTERNATIVE FORMAT
+       --------------------------------------------------------------------- */
 
     if (
       Array.isArray(
@@ -2851,60 +3195,200 @@
           }
 
           var categoryName =
-            category.category ||
-            category.name ||
-            category.title ||
-            "Official Contact";
+            safeText(
+              category.category ||
+              category.name ||
+              category.title ||
+              "Official Contact"
+            ).trim();
 
-          var categoryContacts =
+          var purpose =
+            safeText(
+              category.purpose ||
+              ""
+            ).trim();
+
+          var hours =
+            safeText(
+              category.hours ||
+              ""
+            ).trim();
+
+          var source =
+            safeText(
+              category.source ||
+              category.sourceUrl ||
+              ""
+            ).trim();
+
+          /*
+           * categories[].contacts
+           */
+          if (
             Array.isArray(
               category.contacts
             )
-              ? category.contacts
-              : [];
-
-          categoryContacts.forEach(
-            function (contact) {
-              if (
-                contact &&
-                typeof contact === "object"
-              ) {
-                var copy =
-                  Object.assign(
-                    {},
-                    contact
-                  );
-
-                if (
-                  !copy.category
-                ) {
-                  copy.category =
-                    categoryName;
+          ) {
+            category.contacts.forEach(
+              function (contact) {
+                if (!contact) {
+                  return;
                 }
 
-                contacts.push(copy);
-              } else if (
-                contact
-              ) {
+                var value =
+                  safeText(
+                    contact.value ||
+                    contact.phone ||
+                    contact.email ||
+                    contact.number ||
+                    ""
+                  ).trim();
+
+                if (!value) {
+                  return;
+                }
+
                 contacts.push({
                   category:
                     categoryName,
+                  purpose:
+                    purpose ||
+                    safeText(
+                      contact.purpose ||
+                      ""
+                    ).trim(),
+                  hours:
+                    hours,
+                  type:
+                    contact.type ||
+                    "",
                   value:
-                    String(
-                      contact
-                    )
+                    value,
+                  label:
+                    contact.label ||
+                    contact.name ||
+                    (
+                      contact.type === "email"
+                        ? "Email"
+                        : "Phone"
+                    ),
+                  source:
+                    contact.source ||
+                    contact.sourceUrl ||
+                    source
                 });
               }
-            }
-          );
+            );
+          }
+
+          /*
+           * categories[].phones
+           */
+          if (
+            Array.isArray(
+              category.phones
+            )
+          ) {
+            category.phones.forEach(
+              function (phone) {
+                var number =
+                  typeof phone === "string"
+                    ? phone
+                    : (
+                        phone &&
+                        (
+                          phone.number ||
+                          phone.value ||
+                          phone.phone
+                        )
+                      );
+
+                number =
+                  safeText(
+                    number
+                  ).trim();
+
+                if (!number) {
+                  return;
+                }
+
+                contacts.push({
+                  category:
+                    categoryName,
+                  purpose:
+                    purpose,
+                  hours:
+                    hours,
+                  type:
+                    "phone",
+                  value:
+                    number,
+                  label:
+                    "Phone",
+                  source:
+                    source
+                });
+              }
+            );
+          }
+
+          /*
+           * categories[].emails
+           */
+          if (
+            Array.isArray(
+              category.emails
+            )
+          ) {
+            category.emails.forEach(
+              function (email) {
+                var address =
+                  typeof email === "string"
+                    ? email
+                    : (
+                        email &&
+                        (
+                          email.email ||
+                          email.value
+                        )
+                      );
+
+                address =
+                  safeText(
+                    address
+                  ).trim();
+
+                if (!address) {
+                  return;
+                }
+
+                contacts.push({
+                  category:
+                    categoryName,
+                  purpose:
+                    purpose,
+                  hours:
+                    hours,
+                  type:
+                    "email",
+                  value:
+                    address,
+                  label:
+                    "Email",
+                  source:
+                    source
+                });
+              }
+            );
+          }
         }
       );
     }
 
-    /*
-     * Some simple JSON files may store official website/source information
-     * alongside contacts.
-     */
+    /* ---------------------------------------------------------------------
+       WEBSITE / SOURCE INFORMATION
+       --------------------------------------------------------------------- */
+
     var website =
       data.website ||
       data.officialWebsite ||
@@ -2917,15 +3401,33 @@
       "";
 
     return {
-      contacts: contacts,
-      website: website,
-      source: source,
+      contacts:
+        contacts,
+
+      website:
+        website,
+
+      source:
+        source,
+
       sourceStatus:
         data.sourceStatus ||
         "",
+
       notes:
         data.notes ||
-        ""
+        "",
+
+      description:
+        data.description ||
+        "",
+
+      reportingChannels:
+        Array.isArray(
+          data.reportingChannels
+        )
+          ? data.reportingChannels
+          : []
     };
   }
 
@@ -3009,7 +3511,9 @@
             website: "",
             source: "",
             sourceStatus: "unavailable",
-            notes: ""
+            notes: "",
+            description: "",
+            reportingChannels: []
           };
 
           reportingCache[
@@ -3026,6 +3530,10 @@
     return req;
   }
 
+  /* =======================================================================
+     REPORTING CONTACT HELPERS
+     ======================================================================= */
+
   function getContactValue(
     contact
   ) {
@@ -3038,6 +3546,7 @@
       contact.phone ||
       contact.email ||
       contact.address ||
+      contact.number ||
       ""
     ).trim();
   }
@@ -3107,7 +3616,6 @@
       contact.name ||
       contact.title ||
       contact.department ||
-      contact.category ||
       "Official contact"
     );
   }
@@ -3141,8 +3649,6 @@
 
     /*
      * Convert Zambian local numbers such as 0972... to 260972...
-     *
-     * Do not blindly convert non-Zambian international numbers.
      */
     if (
       digits.length === 10 &&
@@ -3152,21 +3658,25 @@
         digits.slice(1);
     }
 
-    if (
-      digits.length === 9 &&
-      digits.charAt(0) !== "0"
-    ) {
-      return "260" +
-        digits;
-    }
-
+    /*
+     * Already international Zambian number.
+     */
     if (
       digits.indexOf("260") === 0
     ) {
       return digits;
     }
 
-    return digits;
+    /*
+     * Do not guess the country for arbitrary future institutions.
+     */
+    if (
+      safeText(value).trim().charAt(0) === "+"
+    ) {
+      return digits;
+    }
+
+    return "";
   }
 
   function buildContactActions(
@@ -3230,6 +3740,10 @@
 
     return actions;
   }
+
+  /* =======================================================================
+     REPORT TEXT
+     ======================================================================= */
 
   function buildReportText() {
     var descEl =
@@ -3340,20 +3854,23 @@
     ].join("\n");
   }
 
+  /* =======================================================================
+     GENERATE REPORT
+     ======================================================================= */
+
   function generateReport(
     event
   ) {
     event.preventDefault();
 
     /*
-     * Safety gate:
-     *
      * A report must always belong to a known institution.
      */
     if (!currentInstitutionId) {
       if (reportEmptyWarning) {
         reportEmptyWarning.textContent =
           "Please enter the institution website first.";
+
         reportEmptyWarning.hidden =
           false;
       }
@@ -3404,6 +3921,7 @@
       if (reportEmptyWarning) {
         reportEmptyWarning.textContent =
           "Please describe what you want to report or provide the suspicious phone, email, or bank detail.";
+
         reportEmptyWarning.hidden =
           false;
       }
@@ -3513,6 +4031,10 @@
      */
   }
 
+  /* =======================================================================
+     REPORTING CHANNELS
+     ======================================================================= */
+
   function renderReportChannels() {
     var container =
       $("report-channels");
@@ -3559,6 +4081,7 @@
               "\" target=\"_blank\" rel=\"noopener\">" +
               escapeHtml(
                 l.label ||
+                l.name ||
                 l.url
               ) +
               "</a>"
@@ -3570,17 +4093,9 @@
       "<p class=\"empty-state\">No external reporting channel has been configured for this institution yet.</p>";
   }
 
-  /*
-   * ---------------------------------------------------------------
-   * OFFICIAL INSTITUTION REPORTING CONTACTS
-   * ---------------------------------------------------------------
-   *
-   * These are loaded from data/reporting/<institution-id>.json rather than
-   * using arbitrary live crawler contacts.
-   *
-   * This matters because a reporting contact is a trusted action point.
-   * The reporting JSON can be reviewed/verified independently.
-   */
+  /* =======================================================================
+     INSTITUTION-SPECIFIC REPORTING CONTACTS
+     ======================================================================= */
 
   function renderReportInstitutionContacts() {
     var container =
@@ -3600,10 +4115,24 @@
     container.innerHTML =
       "<p class=\"empty-state\">Loading official reporting contacts…</p>";
 
+    var requestedInstitutionId =
+      currentInstitutionId;
+
     loadReportingData(
-      currentInstitutionId
+      requestedInstitutionId
     ).then(
       function (reporting) {
+        /*
+         * Prevent an old request from rendering contacts for the wrong
+         * institution if the user changes institution while loading.
+         */
+        if (
+          currentInstitutionId !==
+          requestedInstitutionId
+        ) {
+          return;
+        }
+
         reporting =
           reporting || {
             contacts: []
@@ -3624,8 +4153,18 @@
         }
 
         /*
-         * Group contacts by category so Accounts, Admissions, General,
-         * etc. are easy for a student to understand.
+         * Group contacts by category.
+         *
+         * For your UNILUS JSON this creates:
+         *
+         * Accounts Department
+         * Admissions
+         * Undergraduate Admissions
+         * Postgraduate Admissions
+         * Customer Service / General Enquiries
+         * Leopards Hill Campus
+         * Silverest Campus
+         * Alternative Admissions Contacts
          */
         var groups = {};
 
@@ -3673,6 +4212,14 @@
 
         var html = "";
 
+        /*
+         * Small heading explaining what these are.
+         */
+        html +=
+          "<p class=\"notice notice-soft\">" +
+          "Use the contact category that matches your issue. These details come from CampusVerify's institution-specific reporting configuration." +
+          "</p>";
+
         categoryNames.forEach(
           function (category) {
             html +=
@@ -3701,6 +4248,18 @@
                     contact
                   );
 
+                var purpose =
+                  safeText(
+                    contact.purpose ||
+                    ""
+                  ).trim();
+
+                var hours =
+                  safeText(
+                    contact.hours ||
+                    ""
+                  ).trim();
+
                 var source =
                   safeText(
                     contact.source ||
@@ -3722,6 +4281,27 @@
                     value
                   ) +
                   "</span>" +
+
+                  (
+                    purpose
+                      ? "<span class=\"info-card-source\">" +
+                        escapeHtml(
+                          purpose
+                        ) +
+                        "</span>"
+                      : ""
+                  ) +
+
+                  (
+                    hours
+                      ? "<span class=\"info-card-source\">" +
+                        "Hours: " +
+                        escapeHtml(
+                          hours
+                        ) +
+                        "</span>"
+                      : ""
+                  ) +
 
                   (
                     type === "phone"
@@ -3769,7 +4349,9 @@
         );
 
         /*
-         * Optional source note from the reporting JSON.
+         * Your current UNILUS JSON intentionally says that the contacts
+         * should be independently verified before being treated as fully
+         * authoritative.
          */
         if (
           reporting.sourceStatus ===
@@ -3781,11 +4363,29 @@
             "</p>";
         }
 
+        /*
+         * If the JSON provides an official website, show it.
+         */
+        if (
+          reporting.website
+        ) {
+          html +=
+            "<p>" +
+            "<a class=\"btn btn-ghost btn-small\" href=\"" +
+            escapeHtml(
+              reporting.website
+            ) +
+            "\" target=\"_blank\" rel=\"noopener\">" +
+            "Open Institution Website" +
+            "</a>" +
+            "</p>";
+        }
+
         container.innerHTML =
           html;
 
         /*
-         * Copy buttons.
+         * COPY BUTTONS
          */
         container
           .querySelectorAll(
@@ -3834,6 +4434,10 @@
       }
     );
   }
+
+  /* =======================================================================
+     REPORT EVENT LISTENERS
+     ======================================================================= */
 
   if (reportForm) {
     reportForm.addEventListener(
@@ -3951,6 +4555,10 @@
 
     applyPreferences(p);
   }
+
+  /* =======================================================================
+     INITIALISATION
+     ======================================================================= */
 
   document.addEventListener(
     "DOMContentLoaded",
