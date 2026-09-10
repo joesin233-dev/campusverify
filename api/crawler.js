@@ -6,7 +6,7 @@
    PURPOSE:
    - Crawl an institution's public official website.
    - Discover useful public pages recursively.
-   - Discover official documents/PDFs linked from those pages.
+   - Discover official documents/PDFs/images linked from those pages.
    - Extract phones, emails, banks, payment records and instructions.
    - Preserve the official source for every discovered item.
    - Use institution-specific JSON evidence only as a FALLBACK.
@@ -20,6 +20,18 @@
    - JSON evidence is used to preserve official information that
      automated extraction could not reliably recover.
    - The crawler stays inside the institution's approved host/domain.
+   - The crawler ONLY accesses publicly reachable pages/files. It never
+     logs in, never bypasses Cloudflare/auth walls, and never touches
+     private portals, messages, or private account data.
+
+   NEW IN THIS VERSION:
+   - Public image (JPG/PNG/etc) document support via OCR (tesseract.js,
+     optional dependency — loaded lazily, degrades gracefully if absent).
+   - JS-rendered public page support via a headless browser
+     (puppeteer-core + @sparticuz/chromium, optional dependency — loaded
+     lazily, only invoked when a page's HTML looks like an empty JS
+     shell, degrades gracefully if absent).
+   - Discovery of publicly linked <img> documents alongside <a> links.
    ========================================================================= */
 
 const {
@@ -52,6 +64,10 @@ const MAX_CRAWL_DEPTH = 15;
 const MAX_CRAWL_TIME_MS = 45000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_LINKS_PER_PAGE = 500;
+
+// JS-rendering / OCR settings
+const JS_RENDER_MIN_TEXT_LENGTH = 200; // below this, HTML is treated as a possible JS shell
+const MAX_JS_RENDER_TIME_MS = 15000;
 
 
 /* =========================================================================
@@ -120,6 +136,9 @@ const EXCLUDED_PATH_PATTERNS =
 const DOCUMENT_EXTENSIONS =
   /\.(pdf|doc|docx|xls|xlsx|csv|txt)$/i;
 
+const IMAGE_EXTENSIONS =
+  /\.(jpe?g|png|gif|bmp|webp|tiff?)$/i;
+
 
 /* =========================================================================
    CRAWL TIME
@@ -130,6 +149,82 @@ function crawlTimeExceeded(startTime) {
     Date.now() - startTime >=
     MAX_CRAWL_TIME_MS
   );
+}
+
+
+/* =========================================================================
+   OPTIONAL DEPENDENCY LOADERS
+   -----------------------------------------------------------------------
+   Both OCR and headless rendering are OPTIONAL. If the packages are not
+   installed, the crawler falls back to its previous behavior instead of
+   crashing. Add "tesseract.js", "puppeteer-core", and "@sparticuz/chromium"
+   to package.json to activate them.
+   ========================================================================= */
+
+var _tesseractModule = null;
+var _tesseractLoadAttempted = false;
+
+function loadTesseract() {
+  if (_tesseractLoadAttempted) {
+    return _tesseractModule;
+  }
+
+  _tesseractLoadAttempted = true;
+
+  try {
+    _tesseractModule = require("tesseract.js");
+
+  } catch (e) {
+    console.error(
+      "CampusVerify: tesseract.js not installed, image OCR disabled:",
+      e.message
+    );
+
+    _tesseractModule = null;
+  }
+
+  return _tesseractModule;
+}
+
+
+var _puppeteerModule = null;
+var _chromiumModule = null;
+var _browserLoadAttempted = false;
+
+function loadHeadlessBrowser() {
+  if (_browserLoadAttempted) {
+    return _puppeteerModule
+      ? { puppeteer: _puppeteerModule, chromium: _chromiumModule }
+      : null;
+  }
+
+  _browserLoadAttempted = true;
+
+  try {
+    _puppeteerModule = require("puppeteer-core");
+
+    try {
+      _chromiumModule = require("@sparticuz/chromium");
+
+    } catch (e) {
+      _chromiumModule = null;
+    }
+
+    return {
+      puppeteer: _puppeteerModule,
+      chromium: _chromiumModule
+    };
+
+  } catch (e) {
+    console.error(
+      "CampusVerify: puppeteer-core not installed, JS-rendered page support disabled:",
+      e.message
+    );
+
+    _puppeteerModule = null;
+
+    return null;
+  }
 }
 
 
@@ -246,6 +341,85 @@ async function fetchWithTimeout(
 
 
 /* =========================================================================
+   HEADLESS RENDER (PUBLIC PAGES ONLY)
+   -----------------------------------------------------------------------
+   Used only as a fallback when a normal fetch returns a near-empty HTML
+   shell (typical of client-side-rendered pages). Never used to bypass
+   login walls or Cloudflare challenges — if the page requires auth or
+   blocks bots, rendering will simply fail or return the same
+   challenge/login markup, and the crawler moves on.
+   ========================================================================= */
+
+async function renderWithHeadlessBrowser(url) {
+  var loaded = loadHeadlessBrowser();
+
+  if (!loaded) {
+    return null;
+  }
+
+  var puppeteer = loaded.puppeteer;
+  var chromium = loaded.chromium;
+
+  var browser = null;
+
+  try {
+    var launchOptions;
+
+    if (chromium) {
+      launchOptions = {
+        args: chromium.args,
+        executablePath: await chromium.executablePath(),
+        headless: true
+      };
+
+    } else {
+      launchOptions = {
+        headless: true
+      };
+    }
+
+    browser = await puppeteer.launch(launchOptions);
+
+    var page = await browser.newPage();
+
+    page.setDefaultNavigationTimeout(
+      MAX_JS_RENDER_TIME_MS
+    );
+
+    await page.setUserAgent(
+      "CampusVerify-Crawler/5.0 (+official institutional verification)"
+    );
+
+    await page.goto(url, {
+      waitUntil: "networkidle2",
+      timeout: MAX_JS_RENDER_TIME_MS
+    });
+
+    var html = await page.content();
+
+    return html;
+
+  } catch (err) {
+    console.error(
+      "CampusVerify headless render failed:",
+      url,
+      err && err.message
+    );
+
+    return null;
+
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+
+      } catch (e) {}
+    }
+  }
+}
+
+
+/* =========================================================================
    SAFE RESPONSE READER
    ========================================================================= */
 
@@ -306,6 +480,20 @@ function isPdfResponse(
       "application/pdf"
     ) !== -1 ||
     /\.pdf(?:$|\?)/i.test(url)
+  );
+}
+
+
+function isImageResponse(
+  response,
+  url
+) {
+  var contentType =
+    getContentType(response);
+
+  return (
+    contentType.indexOf("image/") === 0 ||
+    IMAGE_EXTENSIONS.test(url)
   );
 }
 
@@ -453,6 +641,12 @@ function discoverLinks(
     }
 
     if (
+      IMAGE_EXTENSIONS.test(pathName)
+    ) {
+      score += 6;
+    }
+
+    if (
       /bank|payment|fee|account|finance|registration/i.test(
         pathName
       )
@@ -469,6 +663,115 @@ function discoverLinks(
   found.sort(function (a, b) {
     return b.score - a.score;
   });
+
+  return found;
+}
+
+
+/* =========================================================================
+   IMAGE LINK DISCOVERY (<img> tags)
+   -----------------------------------------------------------------------
+   Institutions sometimes publish account/bank details as a scanned
+   notice or screenshot embedded via <img> rather than a linked file.
+   Only images within the approved institution domain are queued, and
+   only ones that look like real image files (not tracking pixels, not
+   inline data URIs).
+   ========================================================================= */
+
+function discoverImageLinks(
+  html,
+  pageUrl,
+  institution
+) {
+  var imgRegex =
+    /<img\b[^>]*src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+  var found = [];
+  var seen = new Set();
+
+  var match;
+
+  while (
+    (match = imgRegex.exec(html)) !== null
+  ) {
+    if (
+      found.length >=
+      MAX_LINKS_PER_PAGE
+    ) {
+      break;
+    }
+
+    var src =
+      (match[1] || "").trim();
+
+    if (
+      !src ||
+      /^data:/i.test(src)
+    ) {
+      continue;
+    }
+
+    var resolved;
+
+    try {
+      resolved =
+        new URL(
+          src,
+          pageUrl
+        ).toString();
+
+    } catch (e) {
+      continue;
+    }
+
+    var normalised =
+      normaliseUrl(resolved);
+
+    if (!normalised) {
+      continue;
+    }
+
+    if (
+      !isCrawlableUrl(
+        normalised,
+        institution
+      )
+    ) {
+      continue;
+    }
+
+    if (seen.has(normalised)) {
+      continue;
+    }
+
+    seen.add(normalised);
+
+    if (
+      !IMAGE_EXTENSIONS.test(normalised)
+    ) {
+      continue;
+    }
+
+    var lower =
+      normalised.toLowerCase();
+
+    var score = 0;
+
+    PRIORITY_KEYWORDS.forEach(
+      function (keyword) {
+        if (
+          lower.indexOf(keyword) !== -1
+        ) {
+          score += 3;
+        }
+      }
+    );
+
+    found.push({
+      url: normalised,
+      score: score
+    });
+  }
 
   return found;
 }
@@ -829,10 +1132,35 @@ function mergeEvidenceFallback(
       return;
     }
 
-    var source =
+    /* -----------------------------------------------------------------
+       SOURCE RESOLUTION
+       -----------------------------------------------------------------
+       Supports both shapes seen across evidence files:
+       - flat:   item.sourceUrl / item.source (string) / item.sourceTitle
+       - nested: item.source = { title, url }  (current unilus.json shape)
+       ----------------------------------------------------------------- */
+
+    var sourceUrl =
+      (item.source &&
+        typeof item.source === "object" &&
+        item.source.url) ||
       item.sourceUrl ||
-      item.source ||
+      (typeof item.source === "string"
+        ? item.source
+        : "") ||
       "";
+
+    var sourceTitle =
+      (item.source &&
+        typeof item.source === "object" &&
+        item.source.title) ||
+      item.sourceTitle ||
+      "";
+
+
+    /* -----------------------------------------------------------------
+       FLAT SCHEMA (legacy: type "phone" / "email" / "bank")
+       ----------------------------------------------------------------- */
 
     if (
       item.type === "phone" &&
@@ -841,7 +1169,7 @@ function mergeEvidenceFallback(
       addItem(
         itemLists.phones,
         item.value,
-        source,
+        sourceUrl,
         item.value
       );
 
@@ -855,7 +1183,7 @@ function mergeEvidenceFallback(
       addItem(
         itemLists.emails,
         item.value,
-        source,
+        sourceUrl,
         item.value
       );
 
@@ -869,44 +1197,239 @@ function mergeEvidenceFallback(
       addItem(
         itemLists.bankNames,
         item.value,
-        source,
+        sourceUrl,
         item.value
       );
 
       return;
     }
 
-    if (
-      item.type === "payment" &&
-      item.accountNumber
-    ) {
-      addPaymentRecord(
-        itemLists.paymentRecords,
-        {
-          accountNumber:
-            item.accountNumber,
 
-          publishedAccountNumber:
-            item.accountNumber,
+    /* -----------------------------------------------------------------
+       CURRENT SCHEMA: type "contact"
+       (unilus.json: field "general_phone" / "admissions_phone" /
+        "general_email" / "admissions_email")
+       ----------------------------------------------------------------- */
 
-          bankName:
-            item.bankName || "",
+    if (item.type === "contact") {
+      if (
+        (item.field === "general_phone" ||
+          item.field === "admissions_phone") &&
+        item.value
+      ) {
+        addItem(
+          itemLists.phones,
+          item.value,
+          sourceUrl,
+          item.value
+        );
+      }
 
-          accountName:
-            item.accountName || "",
+      if (
+        (item.field === "general_email" ||
+          item.field === "admissions_email") &&
+        item.value
+      ) {
+        addItem(
+          itemLists.emails,
+          item.value,
+          sourceUrl,
+          item.value
+        );
+      }
 
-          branch:
-            item.branch || "",
+      return;
+    }
 
-          source:
-            source,
 
-          pageTitle:
-            item.sourceTitle || "",
+    /* -----------------------------------------------------------------
+       PAYMENT: bank account (either schema)
+       - legacy flat:  item.accountNumber / item.bankName / item.accountName
+       - current:      item.account_number / item.bank / item.account_name
+       ----------------------------------------------------------------- */
 
-          context:
-            item.context || ""
+    if (item.type === "payment") {
+      var accountNumber =
+        item.accountNumber ||
+        item.account_number ||
+        "";
+
+      if (accountNumber) {
+        var bankName =
+          item.bankName ||
+          item.bank ||
+          "";
+
+        var accountName =
+          item.accountName ||
+          item.account_name ||
+          "";
+
+        var branch =
+          item.branch || "";
+
+        var context =
+          item.context ||
+          (item.swift_code
+            ? "SWIFT: " + item.swift_code
+            : "") ||
+          (item.currency
+            ? "Currency: " + item.currency
+            : "");
+
+        if (bankName) {
+          addItem(
+            itemLists.bankNames,
+            bankName,
+            sourceUrl,
+            bankName
+          );
         }
+
+        addPaymentRecord(
+          itemLists.paymentRecords,
+          {
+            accountNumber:
+              accountNumber,
+
+            publishedAccountNumber:
+              accountNumber,
+
+            bankName:
+              bankName,
+
+            accountName:
+              accountName,
+
+            branch:
+              branch,
+
+            source:
+              sourceUrl,
+
+            pageTitle:
+              sourceTitle,
+
+            context:
+              context
+          }
+        );
+
+        return;
+      }
+
+
+      /* -------------------------------------------------------------
+         PAYMENT: non-account payment methods (mobile money, bill
+         payment services, online portals) — these have no account
+         number, so they become readable payment instructions instead.
+         ------------------------------------------------------------- */
+
+      if (
+        item.field === "payment_service" &&
+        item.service
+      ) {
+        var serviceText =
+          "Pay via " +
+          (item.bank || "") +
+          " " +
+          item.service +
+          (item.university_identifier
+            ? " (" +
+              item.university_identifier +
+              ")"
+            : "");
+
+        serviceText =
+          serviceText.replace(
+            /\s+/g,
+            " "
+          ).trim();
+
+        addItem(
+          itemLists.paymentInstructions,
+          serviceText,
+          sourceUrl,
+          serviceText.toLowerCase()
+        );
+
+        return;
+      }
+
+      if (
+        item.field === "mobile_payment" &&
+        item.provider
+      ) {
+        var mobileText =
+          "Pay via " +
+          item.provider +
+          (item.ussd
+            ? " (" + item.ussd + ")"
+            : "") +
+          (item.service
+            ? " - " + item.service
+            : "");
+
+        mobileText =
+          mobileText.replace(
+            /\s+/g,
+            " "
+          ).trim();
+
+        addItem(
+          itemLists.paymentInstructions,
+          mobileText,
+          sourceUrl,
+          mobileText.toLowerCase()
+        );
+
+        return;
+      }
+
+      if (
+        item.field === "online_payment" &&
+        item.portal
+      ) {
+        var onlineText =
+          "Pay online at " +
+          item.portal +
+          (item.method
+            ? " using " + item.method
+            : "");
+
+        onlineText =
+          onlineText.replace(
+            /\s+/g,
+            " "
+          ).trim();
+
+        addItem(
+          itemLists.paymentInstructions,
+          onlineText,
+          sourceUrl,
+          onlineText.toLowerCase()
+        );
+
+        return;
+      }
+
+      return;
+    }
+
+
+    /* -----------------------------------------------------------------
+       PAYMENT RULE (current schema) / PAYMENT INSTRUCTION (legacy)
+       ----------------------------------------------------------------- */
+
+    if (
+      item.type === "payment_rule" &&
+      item.value
+    ) {
+      addItem(
+        itemLists.paymentInstructions,
+        item.value,
+        sourceUrl,
+        item.value.trim().toLowerCase()
       );
 
       return;
@@ -920,8 +1443,8 @@ function mergeEvidenceFallback(
       addItem(
         itemLists.paymentInstructions,
         item.value,
-        source,
-        item.value
+        sourceUrl,
+        item.value.trim().toLowerCase()
       );
     }
   });
@@ -1050,6 +1573,18 @@ function processHtmlPage(
       html,
       pageUrl,
       institution
+    );
+
+  var imageLinks =
+    discoverImageLinks(
+      html,
+      pageUrl,
+      institution
+    );
+
+  discovered =
+    discovered.concat(
+      imageLinks
     );
 
   var canonical =
@@ -1294,6 +1829,158 @@ async function processDocument(
 
 
 /* =========================================================================
+   PROCESS IMAGE DOCUMENT (OCR)
+   -----------------------------------------------------------------------
+   Handles publicly reachable JPG/PNG/etc files — e.g. a scanned notice
+   or screenshot of bank details published on an official page. Uses
+   tesseract.js if available; if not installed, reports ocrAvailable:false
+   instead of throwing, and the JSON evidence fallback can still cover
+   that item if it exists there.
+   ========================================================================= */
+
+async function processImageDocument(
+  buffer,
+  pageUrl,
+  itemLists
+) {
+  var tesseract =
+    loadTesseract();
+
+  if (!tesseract) {
+    return {
+      parsed: false,
+      ocrAvailable: false,
+      ocrError: null,
+      textLength: 0,
+      phonesFound: 0,
+      emailsFound: 0,
+      banksFound: 0,
+      paymentRecordsFound: 0,
+      instructionsFound: 0
+    };
+  }
+
+  var text = "";
+  var ocrError = null;
+
+  try {
+    var result =
+      await tesseract.recognize(
+        buffer,
+        "eng"
+      );
+
+    text =
+      (result &&
+        result.data &&
+        result.data.text) ||
+      "";
+
+  } catch (err) {
+    ocrError =
+      err && err.message
+        ? err.message
+        : String(err);
+
+    console.error(
+      "CampusVerify OCR failed:",
+      pageUrl,
+      ocrError
+    );
+  }
+
+  text =
+    String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r/g, "\n");
+
+  var phones =
+    extractPhones(text);
+
+  var emails =
+    extractEmails(text);
+
+  var banks =
+    extractBanks(text);
+
+  var paymentRecords =
+    extractPaymentRecords(
+      text,
+      pageUrl,
+      pageUrl.split("/").pop() ||
+        "Official image document"
+    );
+
+  var instructions =
+    extractPaymentInstructions(text);
+
+
+  phones.forEach(function (phone) {
+    addItem(
+      itemLists.phones,
+      phone,
+      pageUrl,
+      phone
+    );
+  });
+
+  emails.forEach(function (email) {
+    addItem(
+      itemLists.emails,
+      email,
+      pageUrl,
+      email
+    );
+  });
+
+  banks.forEach(function (bank) {
+    addItem(
+      itemLists.bankNames,
+      bank,
+      pageUrl,
+      bank
+    );
+  });
+
+  paymentRecords.forEach(
+    function (record) {
+      addPaymentRecord(
+        itemLists.paymentRecords,
+        record
+      );
+    }
+  );
+
+  instructions.forEach(
+    function (instruction) {
+      addItem(
+        itemLists.paymentInstructions,
+        instruction,
+        pageUrl,
+        instruction
+          .trim()
+          .toLowerCase()
+      );
+    }
+  );
+
+  return {
+    parsed: true,
+    ocrAvailable: true,
+    ocrError: ocrError,
+    textLength: text.length,
+    phonesFound: phones.length,
+    emailsFound: emails.length,
+    banksFound: banks.length,
+    paymentRecordsFound:
+      paymentRecords.length,
+    instructionsFound:
+      instructions.length
+  };
+}
+
+
+/* =========================================================================
    FETCH + PROCESS ONE URL
    ========================================================================= */
 
@@ -1418,6 +2105,56 @@ async function fetchPage(
     }
 
     if (
+      isImageResponse(
+        response,
+        url
+      ) ||
+      IMAGE_EXTENSIONS.test(
+        parsed.pathname
+      )
+    ) {
+      var imageResult =
+        await processImageDocument(
+          buffer,
+          url,
+          itemLists
+        );
+
+      pageStatus.push({
+        url: url,
+        status: "ok",
+        type: "image",
+        contentType: contentType,
+
+        ocrAvailable:
+          imageResult.ocrAvailable,
+
+        ocrError:
+          imageResult.ocrError,
+
+        textLength:
+          imageResult.textLength,
+
+        phonesFound:
+          imageResult.phonesFound,
+
+        emailsFound:
+          imageResult.emailsFound,
+
+        banksFound:
+          imageResult.banksFound,
+
+        paymentRecordsFound:
+          imageResult.paymentRecordsFound,
+
+        instructionsFound:
+          imageResult.instructionsFound
+      });
+
+      return [];
+    }
+
+    if (
       !isHtmlResponse(
         response
       )
@@ -1437,6 +2174,30 @@ async function fetchPage(
         "utf8"
       );
 
+    var jsRendered = false;
+
+    var initialTextLength =
+      htmlToText(html).length;
+
+    if (
+      initialTextLength <
+      JS_RENDER_MIN_TEXT_LENGTH
+    ) {
+      var renderedHtml =
+        await renderWithHeadlessBrowser(
+          url
+        );
+
+      if (
+        renderedHtml &&
+        htmlToText(renderedHtml)
+          .length > initialTextLength
+      ) {
+        html = renderedHtml;
+        jsRendered = true;
+      }
+    }
+
     var discovered =
       processHtmlPage(
         html,
@@ -1450,6 +2211,7 @@ async function fetchPage(
       status: "ok",
       type: "html",
       contentType: contentType,
+      jsRendered: jsRendered,
       linksDiscovered:
         discovered.length
     });
