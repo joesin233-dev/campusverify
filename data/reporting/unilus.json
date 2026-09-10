@@ -1,0 +1,151 @@
+{
+  "institutionId": "unilus",
+  "institutionName": "University of Lusaka (UNILUS)",
+  "officialWebsite": "https://web.unilus.ac.zm/",
+  "sourceStatus": "pending_verification",
+  "description": "Official institution contact channels for students and users who need to verify suspicious or unverified university-related information.",
+  "contacts": [
+    {
+      "category": "Accounts Department",
+      "purpose": "Fees, payments, bank details and payment verification",
+      "phones": [
+        {
+          "number": "+260 975 884 829",
+          "type": "phone"
+        }
+      ],
+      "emails": [
+        "accounts@unilus.ac.zm"
+      ]
+    },
+    {
+      "category": "Admissions",
+      "purpose": "Admissions, applications and admission-related information",
+      "phones": [
+        {
+          "number": "+260 211 258 409",
+          "type": "phone"
+        },
+        {
+          "number": "+260 211 258 505",
+          "type": "phone"
+        },
+        {
+          "number": "+260 976 075 850",
+          "type": "phone"
+        },
+        {
+          "number": "+260 953 688 533",
+          "type": "phone"
+        }
+      ],
+      "emails": [
+        "admissions@unilus.ac.zm"
+      ]
+    },
+    {
+      "category": "Undergraduate Admissions",
+      "purpose": "Undergraduate admission enquiries",
+      "phones": [
+        {
+          "number": "+260 973 650 722",
+          "type": "phone"
+        }
+      ],
+      "emails": []
+    },
+    {
+      "category": "Postgraduate Admissions",
+      "purpose": "Postgraduate admission enquiries",
+      "phones": [
+        {
+          "number": "+260 977 377 430",
+          "type": "phone"
+        }
+      ],
+      "emails": []
+    },
+    {
+      "category": "Customer Service / General Enquiries",
+      "purpose": "General enquiries and assistance",
+      "phones": [
+        {
+          "number": "+260 972 832 671",
+          "type": "phone"
+        }
+      ],
+      "emails": [
+        "info@unilus.ac.zm"
+      ],
+      "hours": "Monday-Friday, 08:00-17:00"
+    },
+    {
+      "category": "Leopards Hill Campus",
+      "purpose": "Campus-specific enquiries",
+      "phones": [
+        {
+          "number": "+260 211 269 942",
+          "type": "phone"
+        }
+      ],
+      "emails": []
+    },
+    {
+      "category": "Silverest Campus",
+      "purpose": "Campus-specific enquiries",
+      "phones": [
+        {
+          "number": "+260 762 610 474",
+          "type": "phone"
+        },
+        {
+          "number": "+260 952 828 433",
+          "type": "phone"
+        }
+      ],
+      "emails": []
+    },
+    {
+      "category": "Alternative Admissions Contacts",
+      "purpose": "Additional admissions enquiries",
+      "phones": [
+        {
+          "number": "+260 976 075 850",
+          "type": "phone"
+        },
+        {
+          "number": "+260 953 688 533",
+          "type": "phone"
+        },
+        {
+          "number": "+260 211 258 505",
+          "type": "phone"
+        }
+      ],
+      "emails": []
+    }
+  ],
+  "reportingChannels": [
+    {
+      "name": "ZICTA Cyber Complaints Portal",
+      "type": "web",
+      "url": "https://www.zicta.zm/cyber-complaints",
+      "purpose": "Report suspected cyber-related fraud or abuse when appropriate"
+    }
+  ],
+  "addresses": [
+    {
+      "type": "official",
+      "description": "University of Lusaka campus addresses should be displayed only when confirmed from the institution's official website."
+    }
+  ],
+  "usageRules": [
+    "Use these contacts to help users contact the institution directly when CampusVerify cannot fully verify information.",
+    "Do not treat failure to verify as proof of fraud.",
+    "Do not automatically submit reports to the institution.",
+    "Do not invent or modify contact details.",
+    "Prefer the contact category relevant to the user's verification issue.",
+    "Display the institution's official website alongside its reporting contacts.",
+    "Contact information should be independently verified against the institution's official website before being marked as fully verified."
+  ]
+}
