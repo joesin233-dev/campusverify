@@ -1,5 +1,5 @@
 /* =========================================================================
-   CampusVerify v3.2 — script.js
+   CampusVerify v3.3 — script.js
    -----------------------------------------------------------------------
    Website-first institution verification frontend.
 
@@ -13,27 +13,9 @@
      the actual record was found in an official source.
    - "Not found" is NOT automatically treated as fraud.
    - Incomplete crawling is clearly disclosed to the student.
-
-   Compatible with the upgraded crawler response:
-   {
-     institutionId,
-     institutionName,
-     domain,
-     officialUrl,
-     items: {
-       phones,
-       emails,
-       bankNames,
-       paymentRecords,
-       paymentInstructions
-     },
-     sources,
-     pagesCrawled,
-     crawlStats,
-     dataComplete,
-     crawlFailed,
-     checkedAt
-   }
+   - Report Centre requires an identified institution.
+   - Institution-specific reporting contacts are loaded from:
+       data/reporting/<institution-id>.json
    ========================================================================= */
 
 (function () {
@@ -48,8 +30,24 @@
   var crawlCache = {};
   var crawlInFlight = {};
 
+  var reportingCache = {};
+  var reportingInFlight = {};
+
   var activeCheckType = "phone";
   var activeFilter = "all";
+
+  /*
+   * Information from the most recent verification.
+   *
+   * This allows an "Unable to fully verify" result to send the student
+   * directly to the Report Centre with the checked information already
+   * filled in.
+   */
+  var lastVerification = {
+    type: null,
+    value: "",
+    institutionId: null
+  };
 
   /* =======================================================================
      DOM HELPERS
@@ -129,18 +127,6 @@
     pilot: "✓ CampusVerify Pilot Institution"
   };
 
-  /*
-   * Returns the URL the crawler will actually start from for this
-   * institution: the explicit "homepage" override if one is configured
-   * (used when the bare domain has no working site / a dead cert), or
-   * else "https://" + domain + "/".
-   *
-   * IMPORTANT: any UI element that links a student to the institution's
-   * live website (e.g. "Visit Official Website") must use THIS function,
-   * not inst.domain directly — otherwise the button can send students to
-   * a domain that doesn't actually work, even when the crawler itself is
-   * correctly using the working address behind the scenes.
-   */
   function getOfficialSiteUrl(inst) {
     if (!inst) {
       return null;
@@ -225,6 +211,15 @@
       identifyError.hidden = true;
     }
 
+    /*
+     * Clear any previous verification when switching institution.
+     */
+    lastVerification = {
+      type: null,
+      value: "",
+      institutionId: inst.id
+    };
+
     hideResultCard();
 
     /*
@@ -235,6 +230,8 @@
       currentInstitutionId
     ).then(function () {
       renderInfoBody();
+      renderReportChannels();
+      renderReportInstitutionContacts();
     });
   }
 
@@ -291,8 +288,6 @@
         }
 
         /*
-         * IMPORTANT:
-         *
          * The frontend does not automatically trust or crawl an arbitrary
          * website. institutions.js must approve the institution first.
          */
@@ -321,6 +316,12 @@
       "click",
       function () {
         currentInstitutionId = null;
+
+        lastVerification = {
+          type: null,
+          value: "",
+          institutionId: null
+        };
 
         if (identifiedCard) {
           identifiedCard.hidden = true;
@@ -382,8 +383,10 @@
 
     var pageCount =
       stats.pagesCrawled ||
-      data.pagesCrawled &&
-      data.pagesCrawled.length ||
+      (
+        data.pagesCrawled &&
+        data.pagesCrawled.length
+      ) ||
       0;
 
     var message =
@@ -520,13 +523,6 @@
         })
 
         .then(function (data) {
-          /*
-           * Defensive normalisation.
-           *
-           * This prevents an unexpected backend response from breaking
-           * the verification UI.
-           */
-
           data =
             data || {};
 
@@ -644,7 +640,77 @@
       "[data-goto]"
     );
 
+  function showReportAccessMessage() {
+    var existing =
+      $("report-access-warning");
+
+    if (existing) {
+      existing.hidden = false;
+      existing.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+
+      return;
+    }
+
+    /*
+     * If the existing HTML does not contain a dedicated warning element,
+     * use the Verify error area instead.
+     */
+    if (identifyError) {
+      identifyError.textContent =
+        "Please enter the institution website first.";
+      identifyError.hidden = false;
+    }
+
+    if (stepIdentify) {
+      stepIdentify.hidden = false;
+
+      stepIdentify.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
+    }
+  }
+
   function showPage(pageName) {
+    /*
+     * Report Centre is institution-specific.
+     *
+     * Do not allow a report to be opened before an institution has been
+     * identified.
+     */
+    if (
+      pageName === "report" &&
+      !currentInstitutionId
+    ) {
+      /*
+       * Keep the user on Verify instead of opening an empty Report Centre.
+       */
+      pages.forEach(
+        function (page) {
+          page.hidden =
+            page.dataset.page !==
+            "verify";
+        }
+      );
+
+      tabs.forEach(
+        function (tab) {
+          tab.classList.toggle(
+            "is-active",
+            tab.dataset.goto ===
+              "verify"
+          );
+        }
+      );
+
+      showReportAccessMessage();
+
+      return;
+    }
+
     pages.forEach(
       function (page) {
         page.hidden =
@@ -884,10 +950,6 @@
             return false;
           }
 
-          /*
-           * ACCOUNT NUMBER
-           */
-
           if (
             digits &&
             rec.accountNumber
@@ -905,13 +967,6 @@
             }
           }
 
-          /*
-           * ACCOUNT NAME
-           *
-           * Only compare names when the user input doesn't look like
-           * an account number.
-           */
-
           if (
             !/\d/.test(v) &&
             rec.accountName
@@ -928,10 +983,6 @@
               return true;
             }
 
-            /*
-             * Allow a slightly broader match for institution account
-             * names, but avoid accepting tiny strings.
-             */
             if (
               inputName.length >= 5 &&
               (
@@ -1125,10 +1176,6 @@
             .split("/")[0]
         : "";
 
-    /*
-     * Official domain check.
-     */
-
     if (
       officialDomain &&
       (
@@ -1147,10 +1194,6 @@
           "/"
       };
     }
-
-    /*
-     * Exact source / source-host check.
-     */
 
     var srcMatch =
       (sources || []).find(
@@ -1172,10 +1215,6 @@
                 .toLowerCase()
                 .replace(/^www\./, "");
 
-            /*
-             * A link should match an actual crawled source, not merely
-             * contain the same characters somewhere in a URL.
-             */
             return (
               normaliseUrl(src) ===
                 normaliseUrl(
@@ -1393,101 +1432,172 @@
   }
 
   /* =======================================================================
-     PAYMENT EVIDENCE
+     REPORT CTA
      ======================================================================= */
 
-  function renderPaymentEvidence(
-    checkedValue,
-    paymentRecord,
-    checkedAt
+  function rememberVerification(
+    type,
+    value
   ) {
-    var rec =
-      unwrapRecord(
-        paymentRecord
-      );
+    lastVerification = {
+      type: type || null,
+      value: safeText(value).trim(),
+      institutionId:
+        currentInstitutionId
+    };
+  }
 
-    if (!rec) {
-      renderEvidence(
-        checkedValue,
-        "Published by Institution",
-        null,
-        checkedAt
-      );
-
+  function addReportCentreButton() {
+    if (!resultCard) {
       return;
     }
 
-    var source =
-      rec.source ||
-      (
-        paymentRecord &&
-        paymentRecord.source
-      ) ||
-      null;
-
-    var details = "";
-
-    if (rec.bankName) {
-      details +=
-        "<p><strong>Bank:</strong> " +
-        escapeHtml(
-          rec.bankName
-        ) +
-        "</p>";
+    /*
+     * Prevent duplicate buttons if render logic is triggered more than once.
+     */
+    if (
+      resultCard.querySelector(
+        "[data-action='go-report']"
+      )
+    ) {
+      return;
     }
 
-    if (rec.accountNumber) {
-      details +=
-        "<p><strong>Account number:</strong> " +
-        escapeHtml(
-          rec.accountNumber
-        ) +
-        "</p>";
-    }
+    var wrapper =
+      document.createElement("div");
 
-    if (rec.accountName) {
-      details +=
-        "<p><strong>Account name:</strong> " +
-        escapeHtml(
-          rec.accountName
-        ) +
-        "</p>";
-    }
+    wrapper.className =
+      "report-result-cta";
 
-    if (rec.branch) {
-      details +=
-        "<p><strong>Branch:</strong> " +
-        escapeHtml(
-          rec.branch
-        ) +
-        "</p>";
-    }
+    wrapper.innerHTML =
+      "<button type=\"button\" class=\"btn btn-primary\" data-action=\"go-report\">" +
+      "Go to Report Centre" +
+      "</button>" +
 
-    if (rec.pageTitle) {
-      details +=
-        "<p><strong>Page/document:</strong> " +
-        escapeHtml(
-          rec.pageTitle
-        ) +
-        "</p>";
-    }
+      "<p class=\"notice-soft\" style=\"margin-top:10px;\">" +
+      "You can prepare a report and contact the institution using its official reporting channels." +
+      "</p>";
 
-    if (rec.context) {
-      details +=
-        "<p><strong>Published context:</strong> " +
-        escapeHtml(
-          rec.context
-        ) +
-        "</p>";
-    }
-
-    renderEvidence(
-      checkedValue,
-      "Published by Institution",
-      source,
-      checkedAt,
-      details
+    resultCard.appendChild(
+      wrapper
     );
+
+    var button =
+      wrapper.querySelector(
+        "[data-action='go-report']"
+      );
+
+    if (button) {
+      button.addEventListener(
+        "click",
+        function () {
+          openReportCentreFromVerification();
+        }
+      );
+    }
+  }
+
+  function openReportCentreFromVerification() {
+    if (!currentInstitutionId) {
+      showPage("report");
+      return;
+    }
+
+    prefillReportFromVerification();
+
+    showPage("report");
+
+    var form =
+      $("report-form");
+
+    if (form) {
+      setTimeout(
+        function () {
+          form.scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+          });
+        },
+        100
+      );
+    }
+  }
+
+  function prefillReportFromVerification() {
+    if (!lastVerification.value) {
+      return;
+    }
+
+    var value =
+      lastVerification.value;
+
+    var phoneEl =
+      $("report-phone");
+
+    var emailEl =
+      $("report-email");
+
+    var bankEl =
+      $("report-bank");
+
+    var descEl =
+      $("report-description");
+
+    if (
+      lastVerification.type ===
+      "phone"
+    ) {
+      if (phoneEl) {
+        phoneEl.value =
+          value;
+      }
+    }
+
+    if (
+      lastVerification.type ===
+      "email"
+    ) {
+      if (emailEl) {
+        emailEl.value =
+          value;
+      }
+    }
+
+    if (
+      lastVerification.type ===
+      "bank"
+    ) {
+      if (bankEl) {
+        bankEl.value =
+          value;
+      }
+    }
+
+    if (
+      lastVerification.type ===
+      "link"
+    ) {
+      if (descEl) {
+        descEl.value =
+          descEl.value.trim()
+            ? descEl.value
+            : "Suspicious website or link checked by CampusVerify:\n" +
+              value;
+      }
+    }
+
+    if (
+      lastVerification.type ===
+      "other"
+    ) {
+      if (descEl) {
+        descEl.value =
+          descEl.value.trim()
+            ? descEl.value
+            : "Suspicious message checked by CampusVerify:\n\n" +
+              value;
+      }
+    }
   }
 
   /* =======================================================================
@@ -1606,6 +1716,14 @@
       ) ||
       "the institution";
 
+    /*
+     * Remember exactly what was checked so the Report Centre CTA can use it.
+     */
+    rememberVerification(
+      activeCheckType,
+      value
+    );
+
     renderResult(
       incomplete
         ? "partial"
@@ -1640,6 +1758,15 @@
       null,
       data.checkedAt
     );
+
+    /*
+     * Only incomplete / unable-to-verify results get the direct Report
+     * Centre CTA. A simple complete "not found" result remains a
+     * verification result and is not silently treated as a fraud report.
+     */
+    if (incomplete) {
+      addReportCentreButton();
+    }
   }
 
   function submitVerification(
@@ -1695,6 +1822,11 @@
         return;
       }
 
+      rememberVerification(
+        activeCheckType,
+        msg
+      );
+
       var matches =
         scanMessage(msg);
 
@@ -1747,6 +1879,10 @@
           new Date().toISOString()
         );
 
+        /*
+         * A documented scam pattern is stronger than a simple incomplete
+         * verification result, so the existing result is preserved.
+         */
         logVerification(true);
       } else {
         renderResult(
@@ -1779,6 +1915,11 @@
       return;
     }
 
+    rememberVerification(
+      activeCheckType,
+      value
+    );
+
     crawlInstitution(
       currentInstitutionId
     ).then(
@@ -1804,6 +1945,12 @@
               ) +
               "'s official pages at this moment. This is not a result — please try again shortly."
           );
+
+          /*
+           * This is a genuine inability to check. Give the student a
+           * reporting route as well, because the institution is known.
+           */
+          addReportCentreButton();
 
           return;
         }
@@ -1916,24 +2063,11 @@
           activeCheckType ===
           "bank"
         ) {
-          /*
-           * FIRST:
-           *
-           * Search for an actual payment record.
-           */
-
           var paymentMatch =
             findPaymentRecordMatch(
               value,
               items.paymentRecords
             );
-
-          /*
-           * SECOND:
-           *
-           * If no exact account/payment record exists, determine whether
-           * the institution at least mentions the bank.
-           */
 
           var bankNameMatch =
             !paymentMatch
@@ -1961,10 +2095,6 @@
               data.checkedAt
             );
 
-            /*
-             * A legitimate published account is not marked suspicious merely
-             * because an external payment gateway accepts or rejects it.
-             */
             logVerification(false);
 
             return;
@@ -2008,18 +2138,10 @@
                 : ""
             );
 
-            /*
-             * This is intentionally treated as a warning/partial result,
-             * not proof of fraud.
-             */
             logVerification(true);
 
             return;
           }
-
-          /*
-           * NOTHING FOUND.
-           */
 
           renderResult(
             incomplete
@@ -2051,6 +2173,10 @@
             null,
             data.checkedAt
           );
+
+          if (incomplete) {
+            addReportCentreButton();
+          }
 
           logVerification(true);
 
@@ -2120,6 +2246,10 @@
               null,
               data.checkedAt
             );
+
+            if (incomplete) {
+              addReportCentreButton();
+            }
           }
 
           logVerification(
@@ -2221,10 +2351,6 @@
         var it =
           data.items || {};
 
-        /* ---------------------------------------------------------------
-           Phones
-           --------------------------------------------------------------- */
-
         (
           it.phones || []
         ).forEach(
@@ -2240,10 +2366,6 @@
           }
         );
 
-        /* ---------------------------------------------------------------
-           Emails
-           --------------------------------------------------------------- */
-
         (
           it.emails || []
         ).forEach(
@@ -2258,10 +2380,6 @@
             });
           }
         );
-
-        /* ---------------------------------------------------------------
-           Payment records
-           --------------------------------------------------------------- */
 
         (
           it.paymentRecords ||
@@ -2364,10 +2482,6 @@
           }
         );
 
-        /* ---------------------------------------------------------------
-           Independent bank names
-           --------------------------------------------------------------- */
-
         (
           it.bankNames || []
         ).forEach(
@@ -2416,10 +2530,6 @@
           }
         );
 
-        /* ---------------------------------------------------------------
-           Payment instructions
-           --------------------------------------------------------------- */
-
         (
           it.paymentInstructions ||
           []
@@ -2452,10 +2562,6 @@
             });
           }
         );
-
-        /* ---------------------------------------------------------------
-           Official pages
-           --------------------------------------------------------------- */
 
         (
           data.sources || []
@@ -2648,6 +2754,483 @@
   var reportClearBtn =
     $("report-clear-btn");
 
+  /*
+   * ---------------------------------------------------------------
+   * REPORTING JSON LOADER
+   * ---------------------------------------------------------------
+   *
+   * Each supported institution can have its own reporting file:
+   *
+   * data/reporting/unilus.json
+   * data/reporting/zcas.json
+   * data/reporting/unza.json
+   *
+   * The loader is intentionally tolerant of small schema differences so
+   * adding another institution later does not require rewriting this file.
+   */
+
+  function normaliseReportingData(data) {
+    data =
+      data || {};
+
+    /*
+     * Possible supported shapes:
+     *
+     * {
+     *   contacts: [...]
+     * }
+     *
+     * {
+     *   reportingContacts: [...]
+     * }
+     *
+     * {
+     *   channels: [...]
+     * }
+     *
+     * {
+     *   categories: [...]
+     * }
+     */
+
+    var contacts = [];
+
+    if (
+      Array.isArray(
+        data.contacts
+      )
+    ) {
+      contacts =
+        contacts.concat(
+          data.contacts
+        );
+    }
+
+    if (
+      Array.isArray(
+        data.reportingContacts
+      )
+    ) {
+      contacts =
+        contacts.concat(
+          data.reportingContacts
+        );
+    }
+
+    if (
+      Array.isArray(
+        data.channels
+      )
+    ) {
+      contacts =
+        contacts.concat(
+          data.channels
+        );
+    }
+
+    /*
+     * Category-based format:
+     *
+     * categories: [
+     *   {
+     *     category: "Accounts",
+     *     contacts: [...]
+     *   }
+     * ]
+     */
+
+    if (
+      Array.isArray(
+        data.categories
+      )
+    ) {
+      data.categories.forEach(
+        function (category) {
+          if (!category) {
+            return;
+          }
+
+          var categoryName =
+            category.category ||
+            category.name ||
+            category.title ||
+            "Official Contact";
+
+          var categoryContacts =
+            Array.isArray(
+              category.contacts
+            )
+              ? category.contacts
+              : [];
+
+          categoryContacts.forEach(
+            function (contact) {
+              if (
+                contact &&
+                typeof contact === "object"
+              ) {
+                var copy =
+                  Object.assign(
+                    {},
+                    contact
+                  );
+
+                if (
+                  !copy.category
+                ) {
+                  copy.category =
+                    categoryName;
+                }
+
+                contacts.push(copy);
+              } else if (
+                contact
+              ) {
+                contacts.push({
+                  category:
+                    categoryName,
+                  value:
+                    String(
+                      contact
+                    )
+                });
+              }
+            }
+          );
+        }
+      );
+    }
+
+    /*
+     * Some simple JSON files may store official website/source information
+     * alongside contacts.
+     */
+    var website =
+      data.website ||
+      data.officialWebsite ||
+      data.officialUrl ||
+      "";
+
+    var source =
+      data.source ||
+      data.sourceUrl ||
+      "";
+
+    return {
+      contacts: contacts,
+      website: website,
+      source: source,
+      sourceStatus:
+        data.sourceStatus ||
+        "",
+      notes:
+        data.notes ||
+        ""
+    };
+  }
+
+  function loadReportingData(
+    institutionId
+  ) {
+    if (!institutionId) {
+      return Promise.resolve(null);
+    }
+
+    if (
+      reportingCache[
+        institutionId
+      ]
+    ) {
+      return Promise.resolve(
+        reportingCache[
+          institutionId
+        ]
+      );
+    }
+
+    if (
+      reportingInFlight[
+        institutionId
+      ]
+    ) {
+      return reportingInFlight[
+        institutionId
+      ];
+    }
+
+    var url =
+      "/data/reporting/" +
+      encodeURIComponent(
+        institutionId
+      ) +
+      ".json";
+
+    var req =
+      fetch(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json"
+        },
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (!res.ok) {
+            throw new Error(
+              "reporting_http_" +
+              res.status
+            );
+          }
+
+          return res.json();
+        })
+        .then(function (data) {
+          var normalised =
+            normaliseReportingData(
+              data
+            );
+
+          reportingCache[
+            institutionId
+          ] = normalised;
+
+          delete reportingInFlight[
+            institutionId
+          ];
+
+          return normalised;
+        })
+        .catch(function () {
+          delete reportingInFlight[
+            institutionId
+          ];
+
+          var empty = {
+            contacts: [],
+            website: "",
+            source: "",
+            sourceStatus: "unavailable",
+            notes: ""
+          };
+
+          reportingCache[
+            institutionId
+          ] = empty;
+
+          return empty;
+        });
+
+    reportingInFlight[
+      institutionId
+    ] = req;
+
+    return req;
+  }
+
+  function getContactValue(
+    contact
+  ) {
+    if (!contact) {
+      return "";
+    }
+
+    return safeText(
+      contact.value ||
+      contact.phone ||
+      contact.email ||
+      contact.address ||
+      ""
+    ).trim();
+  }
+
+  function getContactType(
+    contact
+  ) {
+    if (!contact) {
+      return "";
+    }
+
+    var explicit =
+      safeText(
+        contact.type ||
+        contact.kind ||
+        ""
+      ).toLowerCase();
+
+    if (
+      explicit === "phone" ||
+      explicit === "telephone" ||
+      explicit === "mobile"
+    ) {
+      return "phone";
+    }
+
+    if (
+      explicit === "email" ||
+      explicit === "e-mail"
+    ) {
+      return "email";
+    }
+
+    var value =
+      getContactValue(
+        contact
+      );
+
+    if (
+      /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(
+        value
+      )
+    ) {
+      return "email";
+    }
+
+    if (
+      /(?:\+?260|0)\s*[\d\s()-]{7,}/.test(
+        value
+      )
+    ) {
+      return "phone";
+    }
+
+    return explicit || "other";
+  }
+
+  function getContactLabel(
+    contact
+  ) {
+    if (!contact) {
+      return "Official contact";
+    }
+
+    return safeText(
+      contact.label ||
+      contact.name ||
+      contact.title ||
+      contact.department ||
+      contact.category ||
+      "Official contact"
+    );
+  }
+
+  function getContactCategory(
+    contact
+  ) {
+    if (!contact) {
+      return "Official Contact";
+    }
+
+    return safeText(
+      contact.category ||
+      contact.department ||
+      contact.group ||
+      contact.label ||
+      "Official Contact"
+    ).trim() || "Official Contact";
+  }
+
+  function normalisePhoneForWhatsApp(
+    value
+  ) {
+    var digits =
+      safeText(value)
+        .replace(/\D/g, "");
+
+    if (!digits) {
+      return "";
+    }
+
+    /*
+     * Convert Zambian local numbers such as 0972... to 260972...
+     *
+     * Do not blindly convert non-Zambian international numbers.
+     */
+    if (
+      digits.length === 10 &&
+      digits.charAt(0) === "0"
+    ) {
+      return "260" +
+        digits.slice(1);
+    }
+
+    if (
+      digits.length === 9 &&
+      digits.charAt(0) !== "0"
+    ) {
+      return "260" +
+        digits;
+    }
+
+    if (
+      digits.indexOf("260") === 0
+    ) {
+      return digits;
+    }
+
+    return digits;
+  }
+
+  function buildContactActions(
+    contact
+  ) {
+    var value =
+      getContactValue(
+        contact
+      );
+
+    var type =
+      getContactType(
+        contact
+      );
+
+    if (!value) {
+      return "";
+    }
+
+    var actions = "";
+
+    if (type === "phone") {
+      var telValue =
+        value.replace(
+          /[^+\d]/g,
+          ""
+        );
+
+      if (telValue) {
+        actions +=
+          "<a class=\"btn btn-ghost btn-small\" href=\"tel:" +
+          escapeHtml(
+            telValue
+          ) +
+          "\">Call</a>";
+      }
+
+      var whatsappNumber =
+        normalisePhoneForWhatsApp(
+          value
+        );
+
+      if (whatsappNumber) {
+        actions +=
+          "<a class=\"btn btn-ghost btn-small\" href=\"https://wa.me/" +
+          escapeHtml(
+            whatsappNumber
+          ) +
+          "\" target=\"_blank\" rel=\"noopener\">WhatsApp</a>";
+      }
+    }
+
+    if (type === "email") {
+      actions +=
+        "<a class=\"btn btn-ghost btn-small\" href=\"mailto:" +
+        escapeHtml(
+          value
+        ) +
+        "\">Email</a>";
+    }
+
+    return actions;
+  }
+
   function buildReportText() {
     var descEl =
       $("report-description");
@@ -2762,6 +3345,24 @@
   ) {
     event.preventDefault();
 
+    /*
+     * Safety gate:
+     *
+     * A report must always belong to a known institution.
+     */
+    if (!currentInstitutionId) {
+      if (reportEmptyWarning) {
+        reportEmptyWarning.textContent =
+          "Please enter the institution website first.";
+        reportEmptyWarning.hidden =
+          false;
+      }
+
+      showPage("verify");
+
+      return;
+    }
+
     var descEl =
       $("report-description");
 
@@ -2801,6 +3402,8 @@
       !bank
     ) {
       if (reportEmptyWarning) {
+        reportEmptyWarning.textContent =
+          "Please describe what you want to report or provide the suspicious phone, email, or bank detail.";
         reportEmptyWarning.hidden =
           false;
       }
@@ -2904,6 +3507,10 @@
       reportEmptyWarning.hidden =
         true;
     }
+
+    /*
+     * Clearing the report does NOT clear the identified institution.
+     */
   }
 
   function renderReportChannels() {
@@ -2917,9 +3524,15 @@
     var inst =
       getCurrentInstitution();
 
+    if (!inst) {
+      container.innerHTML =
+        "<p class=\"empty-state\">Please enter the institution website first.</p>";
+
+      return;
+    }
+
     var links =
       (
-        inst &&
         Array.isArray(
           inst.reportingLinks
         )
@@ -2954,16 +3567,21 @@
         )
         .join("") ||
 
-      "<p class=\"empty-state\">Identify your institution on the Verify page to see its reporting channels.</p>";
+      "<p class=\"empty-state\">No external reporting channel has been configured for this institution yet.</p>";
   }
 
   /*
-   * Shows the institution's own live-crawled contacts (phones/emails)
-   * in the Report Centre, so a student reporting a scam can copy the
-   * institution's REAL contact details straight into their report or
-   * email — pulled from the same crawl used for verification, not a
-   * separate hand-maintained list.
+   * ---------------------------------------------------------------
+   * OFFICIAL INSTITUTION REPORTING CONTACTS
+   * ---------------------------------------------------------------
+   *
+   * These are loaded from data/reporting/<institution-id>.json rather than
+   * using arbitrary live crawler contacts.
+   *
+   * This matters because a reporting contact is a trusted action point.
+   * The reporting JSON can be reviewed/verified independently.
    */
+
   function renderReportInstitutionContacts() {
     var container =
       $("report-institution-contacts");
@@ -2974,130 +3592,247 @@
 
     if (!currentInstitutionId) {
       container.innerHTML =
-        "<p class=\"empty-state\">Identify your institution on the Verify page to see its published contacts.</p>";
+        "<p class=\"empty-state\">Please enter the institution website first.</p>";
 
       return;
     }
 
     container.innerHTML =
-      "<p class=\"empty-state\">Loading live contacts…</p>";
+      "<p class=\"empty-state\">Loading official reporting contacts…</p>";
 
-    crawlInstitution(
+    loadReportingData(
       currentInstitutionId
-    ).then(function (data) {
-      var it =
-        data.items || {};
+    ).then(
+      function (reporting) {
+        reporting =
+          reporting || {
+            contacts: []
+          };
 
-      var contacts = [];
+        var contacts =
+          Array.isArray(
+            reporting.contacts
+          )
+            ? reporting.contacts
+            : [];
 
-      (it.phones || []).forEach(
-        function (p) {
-          if (p && p.value) {
-            contacts.push({
-              label: "Phone",
-              value: p.value,
-              source: p.source
-            });
-          }
+        if (!contacts.length) {
+          container.innerHTML =
+            "<p class=\"empty-state\">No institution-specific reporting contacts are configured yet.</p>";
+
+          return;
         }
-      );
 
-      (it.emails || []).forEach(
-        function (e) {
-          if (e && e.value) {
-            contacts.push({
-              label: "Email",
-              value: e.value,
-              source: e.source
-            });
-          }
-        }
-      );
+        /*
+         * Group contacts by category so Accounts, Admissions, General,
+         * etc. are easy for a student to understand.
+         */
+        var groups = {};
 
-      if (!contacts.length) {
-        container.innerHTML =
-          "<p class=\"empty-state\">" +
-          (
-            data.crawlFailed
-              ? "Could not reach this institution's official pages right now."
-              : "No published contacts found on this institution's official pages yet."
-          ) +
-          "</p>";
+        contacts.forEach(
+          function (contact) {
+            if (!contact) {
+              return;
+            }
 
-        return;
-      }
+            var value =
+              getContactValue(
+                contact
+              );
 
-      container.innerHTML =
-        contacts
-          .map(function (c) {
-            return (
-              "<button type=\"button\" class=\"info-card info-card-copy\" data-copy-value=\"" +
-              escapeHtml(c.value) +
-              "\">" +
+            if (!value) {
+              return;
+            }
 
-              "<span class=\"info-card-title\">" +
-              escapeHtml(c.label) +
-              "</span>" +
+            var category =
+              getContactCategory(
+                contact
+              );
 
-              "<span class=\"info-card-detail\">" +
-              escapeHtml(c.value) +
-              "</span>" +
+            if (!groups[category]) {
+              groups[category] = [];
+            }
 
-              "<span class=\"info-card-source info-card-copy-hint\">Tap to copy</span>" +
-
-              "</button>"
+            groups[category].push(
+              contact
             );
-          })
-          .join("");
+          }
+        );
 
-      container
-        .querySelectorAll(
-          ".info-card-copy"
-        )
-        .forEach(function (btn) {
-          btn.addEventListener(
-            "click",
-            function () {
-              var value =
-                btn.getAttribute(
-                  "data-copy-value"
-                );
+        var categoryNames =
+          Object.keys(
+            groups
+          );
 
-              if (
-                navigator.clipboard &&
-                navigator.clipboard.writeText
-              ) {
-                navigator.clipboard
-                  .writeText(value)
-                  .catch(
-                    function () {}
+        if (!categoryNames.length) {
+          container.innerHTML =
+            "<p class=\"empty-state\">No usable official reporting contacts are configured yet.</p>";
+
+          return;
+        }
+
+        var html = "";
+
+        categoryNames.forEach(
+          function (category) {
+            html +=
+              "<div class=\"report-contact-group\">" +
+
+              "<h3>" +
+              escapeHtml(
+                category
+              ) +
+              "</h3>";
+
+            groups[category].forEach(
+              function (contact) {
+                var value =
+                  getContactValue(
+                    contact
                   );
+
+                var label =
+                  getContactLabel(
+                    contact
+                  );
+
+                var type =
+                  getContactType(
+                    contact
+                  );
+
+                var source =
+                  safeText(
+                    contact.source ||
+                    contact.sourceUrl ||
+                    ""
+                  ).trim();
+
+                html +=
+                  "<div class=\"info-card report-contact-card\">" +
+
+                  "<span class=\"info-card-title\">" +
+                  escapeHtml(
+                    label
+                  ) +
+                  "</span>" +
+
+                  "<span class=\"info-card-detail\">" +
+                  escapeHtml(
+                    value
+                  ) +
+                  "</span>" +
+
+                  (
+                    type === "phone"
+                      ? "<span class=\"info-card-source\">Official phone contact</span>"
+                      : ""
+                  ) +
+
+                  (
+                    type === "email"
+                      ? "<span class=\"info-card-source\">Official email contact</span>"
+                      : ""
+                  ) +
+
+                  "<div class=\"report-contact-actions\">" +
+
+                  buildContactActions(
+                    contact
+                  ) +
+
+                  (
+                    source
+                      ? "<a class=\"btn btn-ghost btn-small\" href=\"" +
+                        escapeHtml(
+                          source
+                        ) +
+                        "\" target=\"_blank\" rel=\"noopener\">Source</a>"
+                      : ""
+                  ) +
+
+                  "<button type=\"button\" class=\"btn btn-ghost btn-small report-copy-contact\" data-copy-value=\"" +
+                  escapeHtml(
+                    value
+                  ) +
+                  "\">Copy</button>" +
+
+                  "</div>" +
+
+                  "</div>";
               }
+            );
 
-              var hint =
-                btn.querySelector(
-                  ".info-card-copy-hint"
-                );
+            html +=
+              "</div>";
+          }
+        );
 
-              if (hint) {
-                var original =
-                  hint.textContent;
+        /*
+         * Optional source note from the reporting JSON.
+         */
+        if (
+          reporting.sourceStatus ===
+          "pending_verification"
+        ) {
+          html +=
+            "<p class=\"notice notice-soft\">" +
+            "These reporting contacts are configured for this institution but should be independently checked against the institution's current official website before being treated as authoritative." +
+            "</p>";
+        }
 
-                hint.textContent =
-                  "Copied!";
+        container.innerHTML =
+          html;
 
-                setTimeout(
-                  function () {
-                    hint.textContent =
-                      original;
-                  },
-                  1500
-                );
-              }
+        /*
+         * Copy buttons.
+         */
+        container
+          .querySelectorAll(
+            ".report-copy-contact"
+          )
+          .forEach(
+            function (btn) {
+              btn.addEventListener(
+                "click",
+                function () {
+                  var value =
+                    btn.getAttribute(
+                      "data-copy-value"
+                    );
+
+                  if (
+                    navigator.clipboard &&
+                    navigator.clipboard.writeText
+                  ) {
+                    navigator.clipboard
+                      .writeText(
+                        value
+                      )
+                      .catch(
+                        function () {}
+                      );
+                  }
+
+                  var original =
+                    btn.textContent;
+
+                  btn.textContent =
+                    "Copied!";
+
+                  setTimeout(
+                    function () {
+                      btn.textContent =
+                        original;
+                    },
+                    1500
+                  );
+                }
+              );
             }
           );
-        });
-    });
+      }
+    );
   }
 
   if (reportForm) {
@@ -3323,10 +4058,6 @@
       renderReportChannels();
       renderReportInstitutionContacts();
 
-      /*
-       * Make sure the initial verification tile state is consistent with
-       * the HTML even if no tile has been clicked yet.
-       */
       activateCheckType(
         activeCheckType
       );
