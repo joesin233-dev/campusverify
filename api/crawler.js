@@ -3,12 +3,39 @@
    -----------------------------------------------------------------------
    General institutional website crawler
 
-   PERFORMANCE VERSION
-   - Keeps the existing architecture and file connections.
-   - Crawls multiple approved pages concurrently.
-   - Keeps JSON evidence as the trusted baseline.
-   - Keeps all URL safety restrictions.
-   - Never searches the wider internet.
+   ARCHITECTURE:
+
+                INSTITUTION WEBSITE
+                        ↓
+                  STRONG CRAWLER
+                        ↓
+           ┌────────────┴────────────┐
+           ↓                         ↓
+      HTML/PDF/etc.              JSON evidence
+           ↓                         ↓
+           └────────────┬────────────┘
+                        ↓
+                 NORMALIZE + MERGE
+                        ↓
+                  FINAL EVIDENCE
+                        ↓
+                     VERIFIER
+
+   PRIMARY:
+   - Crawl the institution's official public website.
+   - Discover HTML pages, PDFs, documents and images.
+   - Extract phones, emails, banks, payment records and instructions.
+
+   FALLBACK:
+   - Load data/evidence/<institutionId>.json.
+   - JSON evidence is loaded FIRST as trusted baseline evidence.
+   - Live crawler then fills gaps and discovers additional evidence.
+   - If live crawling fails, fallback evidence is still returned.
+
+   IMPORTANT:
+   - Never search Google or the wider internet.
+   - Never log in or bypass authentication.
+   - Never claim missing information means fraud.
    ========================================================================= */
 
 const {
@@ -55,19 +82,6 @@ const MAX_SITEMAPS = 10;
 const JS_RENDER_MIN_TEXT_LENGTH = 200;
 
 const MAX_JS_RENDER_TIME_MS = 15000;
-
-/*
- * PERFORMANCE:
- *
- * The old crawler fetched:
- *
- * page 1 → wait → page 2 → wait → page 3 → wait
- *
- * The new crawler can fetch several approved pages at once.
- *
- * Six is deliberately controlled rather than unlimited.
- */
-const CRAWL_CONCURRENCY = 6;
 
 
 /* =========================================================================
@@ -155,6 +169,9 @@ const PRIORITY_KEYWORDS = [
    -----------------------------------------------------------------------
    IMPORTANT:
    Do NOT block generic "portal" paths.
+
+   Some institutions publish legitimate public information through URLs
+   containing "portal". We only exclude obvious authentication/admin paths.
    ========================================================================= */
 
 const EXCLUDED_PATH_PATTERNS =
@@ -314,6 +331,10 @@ function normaliseUrl(url) {
 
 /* =========================================================================
    ACCOUNT NORMALISATION
+   -----------------------------------------------------------------------
+   Used only for matching/deduplication.
+
+   We preserve the original published value for display/source evidence.
    ========================================================================= */
 
 function normaliseAccountNumber(
@@ -415,7 +436,6 @@ async function fetchWithTimeout(
       headers: {
         "User-Agent":
           "CampusVerify-Crawler/6.0 (+official institutional verification)",
-
         "Accept":
           "text/html,application/xhtml+xml,application/pdf,image/*,*/*;q=0.8"
       }
@@ -631,6 +651,9 @@ function discoverLinks(
   var found = [];
   var seen = new Set();
 
+  /*
+   * Regular anchor links.
+   */
   var linkRegex =
     /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
@@ -716,6 +739,9 @@ function discoverLinks(
   }
 
 
+  /*
+   * Also inspect common data attributes used by CMSs/lazy-loading.
+   */
   var attributeRegex =
     /<(?:a|area|link)\b[^>]*(?:href|data-href|data-url|data-link)\s*=\s*["']([^"']+)["'][^>]*>/gi;
 
@@ -934,6 +960,10 @@ function discoverImageLinks(
       continue;
     }
 
+    /*
+     * srcset can contain:
+     * image1.jpg 1x, image2.jpg 2x
+     */
     if (
       src.indexOf(",") !== -1
     ) {
@@ -1266,8 +1296,11 @@ async function discoverRobotsSitemaps(
 /* =========================================================================
    SITEMAP DISCOVERY
    -----------------------------------------------------------------------
-   PERFORMANCE:
-   Initial sitemap candidates are checked concurrently.
+   Supports:
+   - sitemap.xml
+   - sitemap_index.xml
+   - robots.txt sitemap declarations
+   - sitemap indexes referencing other sitemaps
    ========================================================================= */
 
 async function discoverSitemap(
@@ -1292,7 +1325,7 @@ async function discoverSitemap(
     return [];
   }
 
-  var defaultCandidates = [
+  var sitemapCandidates = [
     base.origin +
       "/sitemap.xml",
 
@@ -1300,77 +1333,22 @@ async function discoverSitemap(
       "/sitemap_index.xml"
   ];
 
-  /*
-   * PERFORMANCE:
-   *
-   * robots.txt and the two common sitemap locations are independent.
-   * We request them at the same time instead of waiting sequentially.
-   */
-
-  var robotsPromise =
-    discoverRobotsSitemaps(
+  var robotsSitemaps =
+    await discoverRobotsSitemaps(
       homepage,
       institution,
       startTime
     );
 
-  var defaultPromises =
-    defaultCandidates.map(
-      async function (candidate) {
-        try {
-          var response =
-            await fetchWithTimeout(
-              candidate,
-              FETCH_TIMEOUT_MS
-            );
-
-          if (!response.ok) {
-            return null;
-          }
-
-          var buffer =
-            await readResponseSafely(
-              response
-            );
-
-          if (!buffer) {
-            return null;
-          }
-
-          return {
-            url:
-              candidate,
-
-            xml:
-              buffer.toString(
-                "utf8"
-              )
-          };
-
-        } catch (e) {
-          return null;
-        }
-      }
+  sitemapCandidates =
+    sitemapCandidates.concat(
+      robotsSitemaps
     );
-
-  var defaultResults =
-    await Promise.all(
-      defaultPromises
-    );
-
-  var robotsSitemaps = [];
-
-  try {
-    robotsSitemaps =
-      await robotsPromise;
-  } catch (e) {
-    robotsSitemaps = [];
-  }
 
   var sitemapQueue = [];
   var sitemapSeen = new Set();
 
-  defaultCandidates.forEach(
+  sitemapCandidates.forEach(
     function (url) {
       var normalised =
         normaliseUrl(url);
@@ -1392,57 +1370,6 @@ async function discoverSitemap(
         sitemapQueue.push(
           normalised
         );
-      }
-    }
-  );
-
-  robotsSitemaps.forEach(
-    function (url) {
-      var normalised =
-        normaliseUrl(url);
-
-      if (
-        normalised &&
-        isCrawlableUrl(
-          normalised,
-          institution
-        ) &&
-        !sitemapSeen.has(
-          normalised
-        )
-      ) {
-        sitemapSeen.add(
-          normalised
-        );
-
-        sitemapQueue.push(
-          normalised
-        );
-      }
-    }
-  );
-
-  var initialXmlMap =
-    new Map();
-
-  defaultResults.forEach(
-    function (result) {
-      if (
-        result &&
-        result.url &&
-        result.xml
-      ) {
-        var normalised =
-          normaliseUrl(
-            result.url
-          );
-
-        if (normalised) {
-          initialXmlMap.set(
-            normalised,
-            result.xml
-          );
-        }
       }
     }
   );
@@ -1450,12 +1377,6 @@ async function discoverSitemap(
   var urls = [];
   var urlSeen = new Set();
 
-
-  /*
-   * Process the two common sitemap files first.
-   *
-   * This avoids refetching them after the concurrent initial request.
-   */
   while (
     sitemapQueue.length > 0 &&
     sitemapSeen.size <=
@@ -1466,227 +1387,155 @@ async function discoverSitemap(
       startTime
     )
   ) {
-    /*
-     * Take a small batch so sitemap discovery itself doesn't create
-     * uncontrolled network traffic.
-     */
-    var batch = [];
+    var sitemapUrl =
+      sitemapQueue.shift();
 
-    while (
-      sitemapQueue.length > 0 &&
-      batch.length < 4 &&
-      sitemapSeen.size <=
-        MAX_SITEMAPS
-    ) {
-      var nextSitemap =
-        sitemapQueue.shift();
-
-      if (
-        nextSitemap
-      ) {
-        batch.push(
-          nextSitemap
+    try {
+      var response =
+        await fetchWithTimeout(
+          sitemapUrl,
+          FETCH_TIMEOUT_MS
         );
+
+      if (!response.ok) {
+        continue;
       }
-    }
 
-    if (
-      batch.length === 0
-    ) {
-      break;
-    }
+      var buffer =
+        await readResponseSafely(
+          response
+        );
 
-    var sitemapResults =
-      await Promise.all(
-        batch.map(
-          async function (
-            sitemapUrl
-          ) {
-            if (
-              initialXmlMap.has(
-                sitemapUrl
-              )
-            ) {
-              return {
-                url:
-                  sitemapUrl,
+      if (!buffer) {
+        continue;
+      }
 
-                xml:
-                  initialXmlMap.get(
-                    sitemapUrl
-                  )
-              };
-            }
+      var xml =
+        buffer.toString(
+          "utf8"
+        );
 
-            try {
-              var response =
-                await fetchWithTimeout(
-                  sitemapUrl,
-                  FETCH_TIMEOUT_MS
-                );
+      /*
+       * Sitemap index:
+       *
+       * <sitemap>
+       *   <loc>...</loc>
+       * </sitemap>
+       */
+      var locRegex =
+        /<loc>\s*([^<]+)\s*<\/loc>/gi;
 
-              if (!response.ok) {
-                return null;
-              }
+      var match;
 
-              var buffer =
-                await readResponseSafely(
-                  response
-                );
-
-              if (!buffer) {
-                return null;
-              }
-
-              return {
-                url:
-                  sitemapUrl,
-
-                xml:
-                  buffer.toString(
-                    "utf8"
-                  )
-              };
-
-            } catch (e) {
-              return null;
-            }
-          }
-        )
-      );
-
-
-    sitemapResults.forEach(
-      function (result) {
-        if (
-          !result ||
-          !result.xml
-        ) {
-          return;
-        }
-
-        var xml =
-          result.xml;
-
-        /*
-         * Sitemap index:
-         *
-         * <sitemap>
-         *   <loc>...</loc>
-         * </sitemap>
-         */
-        var locRegex =
-          /<loc>\s*([^<]+)\s*<\/loc>/gi;
-
-        var match;
-
-        while (
-          (match =
-            locRegex.exec(xml)) !==
-            null
-        ) {
-          if (
-            urls.length >=
-            MAX_SITEMAP_URLS
-          ) {
-            break;
-          }
-
-          var url =
-            normaliseUrl(
-              match[1].trim()
-            );
-
-          if (!url) {
-            continue;
-          }
-
-          /*
-           * If this is another sitemap, queue it.
-           */
-          if (
-            /sitemap/i.test(
-              url
-            ) &&
-            !/\.(?:html?|php|aspx?)$/i.test(
-              url
-            )
-          ) {
-            if (
-              isCrawlableUrl(
-                url,
-                institution
-              ) &&
-              !sitemapSeen.has(
-                url
-              ) &&
-              sitemapSeen.size <
-                MAX_SITEMAPS
-            ) {
-              sitemapSeen.add(
-                url
-              );
-
-              sitemapQueue.push(
-                url
-              );
-            }
-
-            continue;
-          }
-
-          if (
-            !isCrawlableUrl(
-              url,
-              institution
-            )
-          ) {
-            continue;
-          }
-
-          if (
-            urlSeen.has(url)
-          ) {
-            continue;
-          }
-
-          urlSeen.add(url);
-
-          var score = 40;
-
-          var lower =
-            url.toLowerCase();
-
-          PRIORITY_KEYWORDS.forEach(
-            function (keyword) {
-              if (
-                lower.indexOf(
-                  keyword
-                ) !== -1
-              ) {
-                score += 4;
-              }
-            }
+      while (
+        (match =
+          locRegex.exec(xml)) !==
+          null
+      ) {
+        var url =
+          normaliseUrl(
+            match[1].trim()
           );
 
+        if (!url) {
+          continue;
+        }
+
+        /*
+         * If this is another sitemap, queue it.
+         */
+        if (
+          /sitemap/i.test(
+            url
+          ) &&
+          !/\.(?:html?|php|aspx?)$/i.test(
+            url
+          )
+        ) {
           if (
-            DOCUMENT_EXTENSIONS.test(
-              lower
-            )
+            isCrawlableUrl(
+              url,
+              institution
+            ) &&
+            !sitemapSeen.has(
+              url
+            ) &&
+            sitemapSeen.size <
+              MAX_SITEMAPS
           ) {
-            score += 12;
+            sitemapSeen.add(
+              url
+            );
+
+            sitemapQueue.push(
+              url
+            );
           }
 
-          urls.push({
-            url:
-              url,
+          continue;
+        }
 
-            score:
-              score
-          });
+        if (
+          !isCrawlableUrl(
+            url,
+            institution
+          )
+        ) {
+          continue;
+        }
+
+        if (
+          urlSeen.has(url)
+        ) {
+          continue;
+        }
+
+        urlSeen.add(url);
+
+        var score = 40;
+
+        var lower =
+          url.toLowerCase();
+
+        PRIORITY_KEYWORDS.forEach(
+          function (keyword) {
+            if (
+              lower.indexOf(
+                keyword
+              ) !== -1
+            ) {
+              score += 4;
+            }
+          }
+        );
+
+        if (
+          DOCUMENT_EXTENSIONS.test(
+            lower
+          )
+        ) {
+          score += 12;
+        }
+
+        urls.push({
+          url:
+            url,
+
+          score:
+            score
+        });
+
+        if (
+          urls.length >=
+          MAX_SITEMAP_URLS
+        ) {
+          break;
         }
       }
-    );
+
+    } catch (err) {
+      continue;
+    }
   }
 
   return urls;
@@ -1808,6 +1657,14 @@ function addPaymentRecord(
     var existingRecord =
       existing.value ||
       existing;
+
+    /*
+     * IMPORTANT:
+     * Live crawler evidence never overwrites an existing trusted
+     * fallback value with potentially weaker/incomplete context.
+     *
+     * It can only fill missing fields.
+     */
 
     if (
       !existingRecord.bankName &&
@@ -1985,6 +1842,11 @@ function loadEvidenceFallback(
 
 /* =========================================================================
    MERGE OFFICIAL JSON EVIDENCE
+   -----------------------------------------------------------------------
+   JSON is treated as trusted institution evidence.
+
+   This function can be called BEFORE the live crawl.
+   That means the fallback is always available even if the crawler fails.
    ========================================================================= */
 
 function mergeEvidenceFallback(
@@ -2055,7 +1917,9 @@ function mergeEvidenceFallback(
         "";
 
 
-      /* PHONE */
+      /* ---------------------------------------------------------------
+         PHONE
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2067,8 +1931,11 @@ function mergeEvidenceFallback(
 
         addItem(
           itemLists.phones,
+
           item.value,
+
           sourceUrl,
+
           String(
             item.value
           )
@@ -2076,6 +1943,7 @@ function mergeEvidenceFallback(
               /\D/g,
               ""
             ),
+
           {
             evidenceSource:
               "json_fallback",
@@ -2096,7 +1964,9 @@ function mergeEvidenceFallback(
       }
 
 
-      /* EMAIL */
+      /* ---------------------------------------------------------------
+         EMAIL
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2108,13 +1978,17 @@ function mergeEvidenceFallback(
 
         addItem(
           itemLists.emails,
+
           item.value,
+
           sourceUrl,
+
           String(
             item.value
           )
             .trim()
             .toLowerCase(),
+
           {
             evidenceSource:
               "json_fallback",
@@ -2135,7 +2009,9 @@ function mergeEvidenceFallback(
       }
 
 
-      /* BANK */
+      /* ---------------------------------------------------------------
+         BANK NAME
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2147,13 +2023,17 @@ function mergeEvidenceFallback(
 
         addItem(
           itemLists.bankNames,
+
           item.value,
+
           sourceUrl,
+
           String(
             item.value
           )
             .trim()
             .toLowerCase(),
+
           {
             evidenceSource:
               "json_fallback",
@@ -2174,7 +2054,30 @@ function mergeEvidenceFallback(
       }
 
 
-      /* CONTACT */
+      /* ---------------------------------------------------------------
+         CONTACT
+         ---------------------------------------------------------------
+         Accept ANY contact field containing:
+
+         phone
+         telephone
+         mobile
+         email
+         mail
+
+         This supports:
+         general_phone
+         admissions_phone
+         accounts_phone
+         accommodation_phone
+         general_email
+         admissions_email
+         accounts_email
+         accommodation_email
+         international_email
+         registrar_email
+         etc.
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2207,8 +2110,11 @@ function mergeEvidenceFallback(
 
           addItem(
             itemLists.phones,
+
             item.value,
+
             sourceUrl,
+
             String(
               item.value
             )
@@ -2216,6 +2122,7 @@ function mergeEvidenceFallback(
                 /\D/g,
                 ""
               ),
+
             {
               evidenceSource:
                 "json_fallback",
@@ -2252,13 +2159,17 @@ function mergeEvidenceFallback(
 
           addItem(
             itemLists.emails,
+
             item.value,
+
             sourceUrl,
+
             String(
               item.value
             )
               .trim()
               .toLowerCase(),
+
             {
               evidenceSource:
                 "json_fallback",
@@ -2283,7 +2194,9 @@ function mergeEvidenceFallback(
       }
 
 
-      /* PAYMENT */
+      /* ---------------------------------------------------------------
+         PAYMENT
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2363,13 +2276,17 @@ function mergeEvidenceFallback(
 
             addItem(
               itemLists.bankNames,
+
               bankName,
+
               sourceUrl,
+
               String(
                 bankName
               )
                 .trim()
                 .toLowerCase(),
+
               {
                 evidenceSource:
                   "json_fallback",
@@ -2394,6 +2311,7 @@ function mergeEvidenceFallback(
 
           addPaymentRecord(
             itemLists.paymentRecords,
+
             {
               accountNumber:
                 accountNumber,
@@ -2437,7 +2355,9 @@ function mergeEvidenceFallback(
         }
 
 
-        /* PAYMENT SERVICE */
+        /* -------------------------------------------------------------
+           PAYMENT SERVICE
+           ------------------------------------------------------------- */
 
         if (
           item.field ===
@@ -2471,11 +2391,16 @@ function mergeEvidenceFallback(
               .length;
 
           addItem(
-            itemLists.paymentInstructions,
+            itemLists
+              .paymentInstructions,
+
             serviceText,
+
             sourceUrl,
+
             serviceText
               .toLowerCase(),
+
             {
               evidenceSource:
                 "json_fallback",
@@ -2498,7 +2423,9 @@ function mergeEvidenceFallback(
         }
 
 
-        /* MOBILE PAYMENT */
+        /* -------------------------------------------------------------
+           MOBILE PAYMENT
+           ------------------------------------------------------------- */
 
         if (
           item.field ===
@@ -2536,11 +2463,16 @@ function mergeEvidenceFallback(
               .length;
 
           addItem(
-            itemLists.paymentInstructions,
+            itemLists
+              .paymentInstructions,
+
             mobileText,
+
             sourceUrl,
+
             mobileText
               .toLowerCase(),
+
             {
               evidenceSource:
                 "json_fallback",
@@ -2563,7 +2495,9 @@ function mergeEvidenceFallback(
         }
 
 
-        /* ONLINE PAYMENT */
+        /* -------------------------------------------------------------
+           ONLINE PAYMENT
+           ------------------------------------------------------------- */
 
         if (
           item.field ===
@@ -2594,11 +2528,16 @@ function mergeEvidenceFallback(
               .length;
 
           addItem(
-            itemLists.paymentInstructions,
+            itemLists
+              .paymentInstructions,
+
             onlineText,
+
             sourceUrl,
+
             onlineText
               .toLowerCase(),
+
             {
               evidenceSource:
                 "json_fallback",
@@ -2624,7 +2563,9 @@ function mergeEvidenceFallback(
       }
 
 
-      /* PAYMENT RULE */
+      /* ---------------------------------------------------------------
+         PAYMENT RULE
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2637,12 +2578,17 @@ function mergeEvidenceFallback(
             .length;
 
         addItem(
-          itemLists.paymentInstructions,
+          itemLists
+            .paymentInstructions,
+
           item.value,
+
           sourceUrl,
+
           item.value
             .trim()
             .toLowerCase(),
+
           {
             evidenceSource:
               "json_fallback",
@@ -2665,7 +2611,9 @@ function mergeEvidenceFallback(
       }
 
 
-      /* PAYMENT INSTRUCTION */
+      /* ---------------------------------------------------------------
+         PAYMENT INSTRUCTION
+         --------------------------------------------------------------- */
 
       if (
         item.type ===
@@ -2678,12 +2626,17 @@ function mergeEvidenceFallback(
             .length;
 
         addItem(
-          itemLists.paymentInstructions,
+          itemLists
+            .paymentInstructions,
+
           item.value,
+
           sourceUrl,
+
           item.value
             .trim()
             .toLowerCase(),
+
           {
             evidenceSource:
               "json_fallback",
@@ -2773,13 +2726,17 @@ function processHtmlPage(
   ).forEach(function (phone) {
     addItem(
       itemLists.phones,
+
       phone,
+
       pageUrl,
+
       String(phone)
         .replace(
           /\D/g,
           ""
         ),
+
       {
         evidenceSource:
           "live_crawler"
@@ -2792,11 +2749,15 @@ function processHtmlPage(
   ).forEach(function (email) {
     addItem(
       itemLists.emails,
+
       email,
+
       pageUrl,
+
       String(email)
         .trim()
         .toLowerCase(),
+
       {
         evidenceSource:
           "live_crawler"
@@ -2809,11 +2770,15 @@ function processHtmlPage(
   ).forEach(function (bank) {
     addItem(
       itemLists.bankNames,
+
       bank,
+
       pageUrl,
+
       String(bank)
         .trim()
         .toLowerCase(),
+
       {
         evidenceSource:
           "live_crawler"
@@ -2828,8 +2793,11 @@ function processHtmlPage(
 
 
   /*
-   * IMPORTANT:
+   * CRITICAL:
+   *
    * Payment parser receives ORIGINAL HTML.
+   *
+   * This allows patterns.js to inspect actual HTML table structure.
    */
   extractPaymentRecords(
     html,
@@ -2838,9 +2806,11 @@ function processHtmlPage(
   ).forEach(function (record) {
     addPaymentRecord(
       itemLists.paymentRecords,
+
       Object.assign(
         {},
         record,
+
         {
           evidenceSource:
             "live_crawler"
@@ -2854,12 +2824,17 @@ function processHtmlPage(
     text
   ).forEach(function (instruction) {
     addItem(
-      itemLists.paymentInstructions,
+      itemLists
+        .paymentInstructions,
+
       instruction,
+
       pageUrl,
+
       instruction
         .trim()
         .toLowerCase(),
+
       {
         evidenceSource:
           "live_crawler"
@@ -3090,13 +3065,17 @@ async function processDocument(
     function (phone) {
       addItem(
         itemLists.phones,
+
         phone,
+
         pageUrl,
+
         String(phone)
           .replace(
             /\D/g,
             ""
           ),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3109,11 +3088,15 @@ async function processDocument(
     function (email) {
       addItem(
         itemLists.emails,
+
         email,
+
         pageUrl,
+
         String(email)
           .trim()
           .toLowerCase(),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3126,11 +3109,15 @@ async function processDocument(
     function (bank) {
       addItem(
         itemLists.bankNames,
+
         bank,
+
         pageUrl,
+
         String(bank)
           .trim()
           .toLowerCase(),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3143,9 +3130,11 @@ async function processDocument(
     function (record) {
       addPaymentRecord(
         itemLists.paymentRecords,
+
         Object.assign(
           {},
           record,
+
           {
             evidenceSource:
               "live_crawler"
@@ -3158,12 +3147,17 @@ async function processDocument(
   instructions.forEach(
     function (instruction) {
       addItem(
-        itemLists.paymentInstructions,
+        itemLists
+          .paymentInstructions,
+
         instruction,
+
         pageUrl,
+
         instruction
           .trim()
           .toLowerCase(),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3330,13 +3324,17 @@ async function processImageDocument(
     function (phone) {
       addItem(
         itemLists.phones,
+
         phone,
+
         pageUrl,
+
         String(phone)
           .replace(
             /\D/g,
             ""
           ),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3349,11 +3347,15 @@ async function processImageDocument(
     function (email) {
       addItem(
         itemLists.emails,
+
         email,
+
         pageUrl,
+
         String(email)
           .trim()
           .toLowerCase(),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3366,11 +3368,15 @@ async function processImageDocument(
     function (bank) {
       addItem(
         itemLists.bankNames,
+
         bank,
+
         pageUrl,
+
         String(bank)
           .trim()
           .toLowerCase(),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3383,9 +3389,11 @@ async function processImageDocument(
     function (record) {
       addPaymentRecord(
         itemLists.paymentRecords,
+
         Object.assign(
           {},
           record,
+
           {
             evidenceSource:
               "live_crawler"
@@ -3398,12 +3406,17 @@ async function processImageDocument(
   instructions.forEach(
     function (instruction) {
       addItem(
-        itemLists.paymentInstructions,
+        itemLists
+          .paymentInstructions,
+
         instruction,
+
         pageUrl,
+
         instruction
           .trim()
           .toLowerCase(),
+
         {
           evidenceSource:
             "live_crawler"
@@ -3577,8 +3590,11 @@ async function fetchPage(
       var documentResult =
         await processDocument(
           buffer,
+
           url,
+
           itemLists,
+
           isPdfResponse(
             response,
             url
@@ -3646,7 +3662,9 @@ async function fetchPage(
       var imageResult =
         await processImageDocument(
           buffer,
+
           url,
+
           itemLists
         );
 
@@ -3766,8 +3784,11 @@ async function fetchPage(
     var discovered =
       processHtmlPage(
         html,
+
         url,
+
         institution,
+
         itemLists
       );
 
@@ -3890,6 +3911,22 @@ async function crawlInstitution(
       institution
     );
 
+  /*
+   * THIS IS THE BIG ARCHITECTURE CHANGE.
+   *
+   * JSON becomes the baseline evidence FIRST.
+   *
+   * The live crawler then adds to it.
+   *
+   * Therefore:
+   *
+   * crawler misses account
+   *        ↓
+   * JSON already contains account
+   *        ↓
+   * final evidence still contains account
+   */
+
   var fallbackStats =
     mergeEvidenceFallback(
       itemLists,
@@ -4009,7 +4046,9 @@ async function crawlInstitution(
     function (url) {
       enqueue(
         url,
+
         0,
+
         900
       );
     }
@@ -4023,7 +4062,9 @@ async function crawlInstitution(
   var sitemapUrls =
     await discoverSitemap(
       homepage,
+
       institution,
+
       startTime
     );
 
@@ -4031,7 +4072,9 @@ async function crawlInstitution(
     function (item) {
       enqueue(
         item.url,
+
         0,
+
         item.score
       );
     }
@@ -4039,215 +4082,64 @@ async function crawlInstitution(
 
 
   /* -----------------------------------------------------------------------
-     MAIN CRAWL — CONCURRENT
-     -----------------------------------------------------------------------
-
-     OLD:
-
-       fetch page
-       wait
-       fetch page
-       wait
-       fetch page
-       wait
-
-     NEW:
-
-       page A ────────┐
-       page B ────────┤
-       page C ────────┤
-       page D ────────┤
-       page E ────────┤
-       page F ────────┘
-
-     Up to CRAWL_CONCURRENCY pages are processed simultaneously.
-
-     All pages are still checked against the same institution host.
+     MAIN CRAWL
      ----------------------------------------------------------------------- */
 
-  var activeCrawls =
-    new Set();
-
-
-  function startCrawlTask(
-    current
-  ) {
-    var task =
-      (async function () {
-        try {
-          var newLinks =
-            await fetchPage(
-              current.url,
-
-              institution,
-
-              itemLists,
-
-              pageStatus
-            );
-
-          if (
-            Array.isArray(
-              newLinks
-            )
-          ) {
-            newLinks.forEach(
-              function (item) {
-                if (
-                  !item ||
-                  !item.url
-                ) {
-                  return;
-                }
-
-                enqueue(
-                  item.url,
-
-                  current.depth + 1,
-
-                  item.score || 0
-                );
-              }
-            );
-          }
-
-        } catch (err) {
-          /*
-           * fetchPage already handles normal failures.
-           * This extra protection makes sure one page can never
-           * terminate the entire concurrent crawl.
-           */
-          console.error(
-            "CampusVerify concurrent crawl task failed:",
-            current.url,
-            err &&
-              err.message
-          );
-        }
-      })();
-
-    activeCrawls.add(
-      task
-    );
-
-    /*
-     * Remove completed task from active set.
-     *
-     * We intentionally do not use Promise.race with artificial
-     * wrappers here. This keeps the concurrency bookkeeping reliable.
-     */
-    task.then(
-      function () {
-        activeCrawls.delete(
-          task
-        );
-      },
-      function () {
-        activeCrawls.delete(
-          task
-        );
-      }
-    );
-  }
-
-
   while (
-    (
-      queue.length > 0 ||
-      activeCrawls.size > 0
-    ) &&
+    queue.length > 0 &&
     visited.size <
       MAX_PAGES_PER_INSTITUTION &&
     !crawlTimeExceeded(
       startTime
     )
   ) {
+    var current =
+      queue.shift();
 
-    /*
-     * Fill available crawler slots.
-     */
-    while (
-      activeCrawls.size <
-        CRAWL_CONCURRENCY &&
-      queue.length > 0 &&
-      visited.size <
-        MAX_PAGES_PER_INSTITUTION &&
-      !crawlTimeExceeded(
-        startTime
-      )
-    ) {
-      var current =
-        null;
-
-      /*
-       * Find the next unvisited URL.
-       */
-      while (
-        queue.length > 0
-      ) {
-        var candidate =
-          queue.shift();
-
-        if (!candidate) {
-          continue;
-        }
-
-        if (
-          visited.has(
-            candidate.url
-          )
-        ) {
-          continue;
-        }
-
-        visited.add(
-          candidate.url
-        );
-
-        current =
-          candidate;
-
-        break;
-      }
-
-      if (!current) {
-        break;
-      }
-
-      startCrawlTask(
-        current
-      );
+    if (!current) {
+      break;
     }
 
-
-    /*
-     * If there are active requests, wait until at least one finishes.
-     *
-     * The completed task removes itself from activeCrawls.
-     */
     if (
-      activeCrawls.size > 0
-    ) {
-      await Promise.race(
-        Array.from(
-          activeCrawls
-        )
-      );
-    }
-  }
-
-
-  /*
-   * If the queue became empty while some requests were still processing,
-   * allow those requests to finish before creating the final result.
-   */
-  if (
-    activeCrawls.size > 0
-  ) {
-    await Promise.all(
-      Array.from(
-        activeCrawls
+      visited.has(
+        current.url
       )
+    ) {
+      continue;
+    }
+
+    visited.add(
+      current.url
+    );
+
+    var newLinks =
+      await fetchPage(
+        current.url,
+
+        institution,
+
+        itemLists,
+
+        pageStatus
+      );
+
+    newLinks.forEach(
+      function (item) {
+        if (
+          !item ||
+          !item.url
+        ) {
+          return;
+        }
+
+        enqueue(
+          item.url,
+
+          current.depth + 1,
+
+          item.score || 0
+        );
+      }
     );
   }
 
@@ -4308,6 +4200,12 @@ async function crawlInstitution(
     crawlEndedNaturally &&
     failedPages.length === 0;
 
+  /*
+   * The crawl itself can fail while JSON evidence still exists.
+   *
+   * Therefore crawlFailed describes the LIVE crawler only.
+   * It does NOT mean final evidence is empty.
+   */
   var crawlFailed =
     successfulPages.length ===
     0;
@@ -4317,6 +4215,9 @@ async function crawlInstitution(
     items:
       itemLists,
 
+    /*
+     * Compatibility alias.
+     */
     evidence:
       itemLists,
 
@@ -4350,12 +4251,6 @@ async function crawlInstitution(
 
       maxTimeMs:
         MAX_CRAWL_TIME_MS,
-
-      /*
-       * New performance information.
-       */
-      concurrency:
-        CRAWL_CONCURRENCY,
 
       timeLimitReached:
         timeLimitReached,
@@ -4445,8 +4340,8 @@ module.exports =
     /*
      * IMPORTANT:
      *
-     * Emergency JSON evidence is loaded independently so that a fatal
-     * crawler error can never wipe out trusted evidence.
+     * We load fallback evidence OUTSIDE the main crawl so that a fatal
+     * live-crawler error can never wipe out trusted JSON evidence.
      */
 
     var emergencyLists =
@@ -4491,9 +4386,15 @@ module.exports =
         officialUrl:
           homepage,
 
+        /*
+         * Main evidence object.
+         */
         items:
           result.items,
 
+        /*
+         * Compatibility alias.
+         */
         evidence:
           result.items,
 
@@ -4524,7 +4425,6 @@ module.exports =
         "CampusVerify crawler fatal error:",
         err
       );
-
 
       /*
        * EVEN IF THE LIVE CRAWLER CRASHES:
@@ -4581,9 +4481,6 @@ module.exports =
 
           maxTimeMs:
             MAX_CRAWL_TIME_MS,
-
-          concurrency:
-            CRAWL_CONCURRENCY,
 
           timeLimitReached:
             false,
