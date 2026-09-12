@@ -1426,87 +1426,6 @@
     evidenceCard.hidden = false;
   }
 
-  /*
-   * NOTE: this function is called from the "bank/payment" result branch
-   * further down (on an exact payment-record match), but it did not
-   * exist anywhere in the original file — calling it would have thrown
-   * a runtime error the first time someone verified a bank/payment
-   * detail that matched. Added here (purely additive, nothing else
-   * changed) so that a successful bank/payment verification renders
-   * correctly instead of crashing.
-   */
-  function renderPaymentEvidence(
-    checkedValue,
-    matchItem,
-    checkedAt
-  ) {
-    var rec =
-      unwrapRecord(matchItem);
-
-    if (!rec) {
-      renderEvidence(
-        checkedValue,
-        "Found",
-        (
-          matchItem &&
-          matchItem.source
-        ) || null,
-        checkedAt
-      );
-
-      return;
-    }
-
-    var extra = "";
-
-    if (rec.bankName) {
-      extra +=
-        "<p><strong>Bank:</strong> " +
-        escapeHtml(rec.bankName) +
-        "</p>";
-    }
-
-    if (rec.accountName) {
-      extra +=
-        "<p><strong>Account name:</strong> " +
-        escapeHtml(rec.accountName) +
-        "</p>";
-    }
-
-    if (
-      rec.publishedAccountNumber ||
-      rec.accountNumber
-    ) {
-      extra +=
-        "<p><strong>Account number:</strong> " +
-        escapeHtml(
-          rec.publishedAccountNumber ||
-          rec.accountNumber
-        ) +
-        "</p>";
-    }
-
-    if (rec.branch) {
-      extra +=
-        "<p><strong>Branch:</strong> " +
-        escapeHtml(rec.branch) +
-        "</p>";
-    }
-
-    renderEvidence(
-      checkedValue,
-      "Found",
-      rec.source ||
-        (
-          matchItem &&
-          matchItem.source
-        ) ||
-        null,
-      checkedAt,
-      extra
-    );
-  }
-
   /* =======================================================================
      REPORT CTA
      ======================================================================= */
@@ -1766,480 +1685,6 @@
   }
 
   /* =======================================================================
-     COMMENTS
-     -----------------------------------------------------------------------
-     A small comment thread attached to each verification result (e.g. the
-     specific phone number, email, or account just checked), shared across
-     all students. Backed by Netlify Blobs via three small serverless
-     functions: /api/comments-get, /api/comments-post, /api/comments-flag.
-
-     This section is intentionally self-contained: it builds its own DOM
-     container and inserts it right after the evidence card, so it works
-     without any changes to index.html. It only appears for check types
-     that have a stable identity to attach comments to (phone/email/bank/
-     link) — not for the free-text scam-message check, where there is no
-     stable "target" for a shared thread to attach to.
-     ======================================================================= */
-
-  var COMMENTABLE_TYPES = [
-    "phone",
-    "email",
-    "bank",
-    "link"
-  ];
-
-  var commentsCard = null;
-
-  var commentsRequestToken = 0;
-
-  function ensureCommentsCard() {
-    if (commentsCard) {
-      return commentsCard;
-    }
-
-    commentsCard =
-      document.createElement("div");
-
-    commentsCard.id =
-      "comments-card";
-
-    commentsCard.className =
-      "comments-card";
-
-    commentsCard.hidden = true;
-
-    if (
-      evidenceCard &&
-      evidenceCard.parentNode
-    ) {
-      evidenceCard.parentNode.insertBefore(
-        commentsCard,
-        evidenceCard.nextSibling
-      );
-    } else if (
-      resultCard &&
-      resultCard.parentNode
-    ) {
-      resultCard.parentNode.insertBefore(
-        commentsCard,
-        resultCard.nextSibling
-      );
-    } else {
-      document.body.appendChild(
-        commentsCard
-      );
-    }
-
-    return commentsCard;
-  }
-
-  function formatCommentDate(iso) {
-    try {
-      return new Date(
-        iso
-      ).toLocaleString();
-    } catch (e) {
-      return "";
-    }
-  }
-
-  function renderCommentsList(
-    card,
-    comments
-  ) {
-    var listEl =
-      card.querySelector(
-        ".comments-list"
-      );
-
-    if (!listEl) {
-      return;
-    }
-
-    if (
-      !comments ||
-      !comments.length
-    ) {
-      listEl.innerHTML =
-        "<p class=\"empty-state\">No comments yet — be the first to share your experience.</p>";
-
-      return;
-    }
-
-    listEl.innerHTML =
-      comments
-        .map(
-          function (c) {
-            return (
-              "<div class=\"comment-item\" data-comment-id=\"" +
-              escapeHtml(
-                c.id
-              ) +
-              "\">" +
-
-              "<p class=\"comment-text\">" +
-              escapeHtml(
-                c.text
-              ) +
-              "</p>" +
-
-              "<div class=\"comment-meta\">" +
-
-              "<span class=\"comment-date\">" +
-              escapeHtml(
-                formatCommentDate(
-                  c.createdAt
-                )
-              ) +
-              "</span>" +
-
-              "<button type=\"button\" class=\"btn btn-ghost btn-small comment-flag-btn\" data-comment-id=\"" +
-              escapeHtml(
-                c.id
-              ) +
-              "\">Flag</button>" +
-
-              "</div>" +
-
-              "</div>"
-            );
-          }
-        )
-        .join("");
-
-    listEl
-      .querySelectorAll(
-        ".comment-flag-btn"
-      )
-      .forEach(
-        function (btn) {
-          btn.addEventListener(
-            "click",
-            function () {
-              flagComment(
-                card,
-                btn.dataset.commentId,
-                btn
-              );
-            }
-          );
-        }
-      );
-  }
-
-  function flagComment(
-    card,
-    commentId,
-    btn
-  ) {
-    if (!commentId) {
-      return;
-    }
-
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent =
-        "Flagging…";
-    }
-
-    fetch("/api/comments-flag", {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          "application/json"
-      },
-      body: JSON.stringify({
-        institution:
-          card.dataset.institutionId,
-        type:
-          card.dataset.checkType,
-        value:
-          card.dataset.checkValue,
-        commentId:
-          commentId
-      })
-    })
-      .then(function (res) {
-        return res.json();
-      })
-      .then(function (data) {
-        renderCommentsList(
-          card,
-          data.comments || []
-        );
-      })
-      .catch(function () {
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent =
-            "Flag";
-        }
-      });
-  }
-
-  function submitComment(
-    card
-  ) {
-    var textarea =
-      card.querySelector(
-        ".comment-input"
-      );
-
-    var submitBtn =
-      card.querySelector(
-        ".comment-submit-btn"
-      );
-
-    var warningEl =
-      card.querySelector(
-        ".comment-warning"
-      );
-
-    var text =
-      textarea
-        ? textarea.value.trim()
-        : "";
-
-    if (warningEl) {
-      warningEl.hidden = true;
-    }
-
-    if (!text) {
-      if (warningEl) {
-        warningEl.textContent =
-          "Please write a comment first.";
-        warningEl.hidden = false;
-      }
-
-      return;
-    }
-
-    if (text.length > 500) {
-      if (warningEl) {
-        warningEl.textContent =
-          "Comments are limited to 500 characters.";
-        warningEl.hidden = false;
-      }
-
-      return;
-    }
-
-    if (submitBtn) {
-      submitBtn.disabled = true;
-      submitBtn.textContent =
-        "Posting…";
-    }
-
-    fetch("/api/comments-post", {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          "application/json"
-      },
-      body: JSON.stringify({
-        institution:
-          card.dataset.institutionId,
-        type:
-          card.dataset.checkType,
-        value:
-          card.dataset.checkValue,
-        text:
-          text
-      })
-    })
-      .then(function (res) {
-        return res.json().then(
-          function (data) {
-            return {
-              ok: res.ok,
-              data: data
-            };
-          }
-        );
-      })
-      .then(function (result) {
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent =
-            "Post comment";
-        }
-
-        if (!result.ok) {
-          if (warningEl) {
-            warningEl.textContent =
-              (
-                result.data &&
-                result.data.error
-              ) ||
-              "Could not post your comment. Please try again.";
-            warningEl.hidden = false;
-          }
-
-          return;
-        }
-
-        if (textarea) {
-          textarea.value = "";
-        }
-
-        renderCommentsList(
-          card,
-          result.data.comments || []
-        );
-      })
-      .catch(function () {
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent =
-            "Post comment";
-        }
-
-        if (warningEl) {
-          warningEl.textContent =
-            "Could not post your comment. Please check your connection and try again.";
-          warningEl.hidden = false;
-        }
-      });
-  }
-
-  function renderCommentsSection(
-    institutionId,
-    type,
-    value
-  ) {
-    if (
-      COMMENTABLE_TYPES.indexOf(
-        type
-      ) === -1
-    ) {
-      if (commentsCard) {
-        commentsCard.hidden = true;
-      }
-
-      return;
-    }
-
-    var card =
-      ensureCommentsCard();
-
-    var thisRequest =
-      ++commentsRequestToken;
-
-    card.dataset.institutionId =
-      institutionId || "";
-
-    card.dataset.checkType =
-      type || "";
-
-    card.dataset.checkValue =
-      value || "";
-
-    card.hidden = false;
-
-    card.innerHTML =
-      "<span class=\"notice-tag\">Community Comments</span>" +
-
-      "<p class=\"notice-soft\">Comments are shared with other students and are not verified by CampusVerify — they're opinions and experiences, not evidence.</p>" +
-
-      "<div class=\"comments-list\">" +
-      "<p class=\"empty-state\">Loading comments…</p>" +
-      "</div>" +
-
-      "<form class=\"comment-form\">" +
-      "<label class=\"comment-form-label\" for=\"comment-input\">Add a comment</label>" +
-      "<textarea class=\"comment-input\" id=\"comment-input\" rows=\"3\" maxlength=\"500\" placeholder=\"Share your experience or a tip for other students…\"></textarea>" +
-      "<p class=\"notice notice-warning comment-warning\" hidden></p>" +
-      "<button type=\"submit\" class=\"btn btn-primary btn-small comment-submit-btn\">Post comment</button>" +
-      "</form>";
-
-    var form =
-      card.querySelector(
-        ".comment-form"
-      );
-
-    if (form) {
-      form.addEventListener(
-        "submit",
-        function (event) {
-          event.preventDefault();
-
-          submitComment(
-            card
-          );
-        }
-      );
-    }
-
-    var query =
-      "/api/comments-get?institution=" +
-      encodeURIComponent(
-        institutionId || ""
-      ) +
-      "&type=" +
-      encodeURIComponent(
-        type || ""
-      ) +
-      "&value=" +
-      encodeURIComponent(
-        value || ""
-      );
-
-    fetch(query, {
-      method: "GET",
-      headers: {
-        Accept: "application/json"
-      },
-      cache: "no-store"
-    })
-      .then(function (res) {
-        return res.json();
-      })
-      .then(function (data) {
-        /*
-         * A newer verification may have started while this was loading —
-         * ignore stale responses.
-         */
-        if (
-          thisRequest !==
-          commentsRequestToken
-        ) {
-          return;
-        }
-
-        renderCommentsList(
-          card,
-          data.comments || []
-        );
-      })
-      .catch(function () {
-        if (
-          thisRequest !==
-          commentsRequestToken
-        ) {
-          return;
-        }
-
-        var listEl =
-          card.querySelector(
-            ".comments-list"
-          );
-
-        if (listEl) {
-          listEl.innerHTML =
-            "<p class=\"empty-state\">Comments are temporarily unavailable.</p>";
-        }
-      });
-  }
-
-  function hideCommentsSection() {
-    commentsRequestToken++;
-
-    if (commentsCard) {
-      commentsCard.hidden = true;
-    }
-  }
-
-  /* =======================================================================
      VERIFICATION FORM
      ======================================================================= */
 
@@ -2314,7 +1759,6 @@
     event.preventDefault();
 
     hideResultCard();
-    hideCommentsSection();
 
     if (verifyEmptyWarning) {
       verifyEmptyWarning.hidden =
@@ -2537,12 +1981,6 @@
             !phoneMatch
           );
 
-          renderCommentsSection(
-            currentInstitutionId,
-            activeCheckType,
-            value
-          );
-
           return;
         }
 
@@ -2590,12 +2028,6 @@
             !emailMatch
           );
 
-          renderCommentsSection(
-            currentInstitutionId,
-            activeCheckType,
-            value
-          );
-
           return;
         }
 
@@ -2640,12 +2072,6 @@
             );
 
             logVerification(false);
-
-            renderCommentsSection(
-              currentInstitutionId,
-              activeCheckType,
-              value
-            );
 
             return;
           }
@@ -2692,12 +2118,6 @@
 
             logVerification(true);
 
-            renderCommentsSection(
-              currentInstitutionId,
-              activeCheckType,
-              value
-            );
-
             return;
           }
 
@@ -2737,12 +2157,6 @@
           }
 
           logVerification(true);
-
-          renderCommentsSection(
-            currentInstitutionId,
-            activeCheckType,
-            value
-          );
 
           return;
         }
@@ -2818,12 +2232,6 @@
 
           logVerification(
             !linkMatch
-          );
-
-          renderCommentsSection(
-            currentInstitutionId,
-            activeCheckType,
-            value
           );
         }
       }
@@ -4751,3 +4159,516 @@
          *
          * Accounts Department
          * Admissions
+         * Undergraduate Admissions
+         * Postgraduate Admissions
+         * Customer Service / General Enquiries
+         * Leopards Hill Campus
+         * Silverest Campus
+         * Alternative Admissions Contacts
+         */
+        var groups = {};
+
+        contacts.forEach(
+          function (contact) {
+            if (!contact) {
+              return;
+            }
+
+            var value =
+              getContactValue(
+                contact
+              );
+
+            if (!value) {
+              return;
+            }
+
+            var category =
+              getContactCategory(
+                contact
+              );
+
+            if (!groups[category]) {
+              groups[category] = [];
+            }
+
+            groups[category].push(
+              contact
+            );
+          }
+        );
+
+        var categoryNames =
+          Object.keys(
+            groups
+          );
+
+        if (!categoryNames.length) {
+          container.innerHTML =
+            "<p class=\"empty-state\">No usable official reporting contacts are configured yet.</p>";
+
+          return;
+        }
+
+        var html = "";
+
+        /*
+         * Small heading explaining what these are.
+         */
+        html +=
+          "<p class=\"notice notice-soft\">" +
+          "Use the contact category that matches your issue. These details come from CampusVerify's institution-specific reporting configuration." +
+          "</p>";
+
+        categoryNames.forEach(
+          function (category) {
+            html +=
+              "<div class=\"report-contact-group\">" +
+
+              "<h3>" +
+              escapeHtml(
+                category
+              ) +
+              "</h3>";
+
+            groups[category].forEach(
+              function (contact) {
+                var value =
+                  getContactValue(
+                    contact
+                  );
+
+                var label =
+                  getContactLabel(
+                    contact
+                  );
+
+                var type =
+                  getContactType(
+                    contact
+                  );
+
+                var purpose =
+                  safeText(
+                    contact.purpose ||
+                    ""
+                  ).trim();
+
+                var hours =
+                  safeText(
+                    contact.hours ||
+                    ""
+                  ).trim();
+
+                var source =
+                  safeText(
+                    contact.source ||
+                    contact.sourceUrl ||
+                    ""
+                  ).trim();
+
+                html +=
+                  "<div class=\"info-card report-contact-card\">" +
+
+                  "<span class=\"info-card-title\">" +
+                  escapeHtml(
+                    label
+                  ) +
+                  "</span>" +
+
+                  "<span class=\"info-card-detail\">" +
+                  escapeHtml(
+                    value
+                  ) +
+                  "</span>" +
+
+                  (
+                    purpose
+                      ? "<span class=\"info-card-source\">" +
+                        escapeHtml(
+                          purpose
+                        ) +
+                        "</span>"
+                      : ""
+                  ) +
+
+                  (
+                    hours
+                      ? "<span class=\"info-card-source\">" +
+                        "Hours: " +
+                        escapeHtml(
+                          hours
+                        ) +
+                        "</span>"
+                      : ""
+                  ) +
+
+                  (
+                    type === "phone"
+                      ? "<span class=\"info-card-source\">Official phone contact</span>"
+                      : ""
+                  ) +
+
+                  (
+                    type === "email"
+                      ? "<span class=\"info-card-source\">Official email contact</span>"
+                      : ""
+                  ) +
+
+                  "<div class=\"report-contact-actions\">" +
+
+                  buildContactActions(
+                    contact
+                  ) +
+
+                  (
+                    source
+                      ? "<a class=\"btn btn-ghost btn-small\" href=\"" +
+                        escapeHtml(
+                          source
+                        ) +
+                        "\" target=\"_blank\" rel=\"noopener\">Source</a>"
+                      : ""
+                  ) +
+
+                  "<button type=\"button\" class=\"btn btn-ghost btn-small report-copy-contact\" data-copy-value=\"" +
+                  escapeHtml(
+                    value
+                  ) +
+                  "\">Copy</button>" +
+
+                  "</div>" +
+
+                  "</div>";
+              }
+            );
+
+            html +=
+              "</div>";
+          }
+        );
+
+        /*
+         * Your current UNILUS JSON intentionally says that the contacts
+         * should be independently verified before being treated as fully
+         * authoritative.
+         */
+        if (
+          reporting.sourceStatus ===
+          "pending_verification"
+        ) {
+          html +=
+            "<p class=\"notice notice-soft\">" +
+            "These reporting contacts are configured for this institution but should be independently checked against the institution's current official website before being treated as authoritative." +
+            "</p>";
+        }
+
+        /*
+         * If the JSON provides an official website, show it.
+         */
+        if (
+          reporting.website
+        ) {
+          html +=
+            "<p>" +
+            "<a class=\"btn btn-ghost btn-small\" href=\"" +
+            escapeHtml(
+              reporting.website
+            ) +
+            "\" target=\"_blank\" rel=\"noopener\">" +
+            "Open Institution Website" +
+            "</a>" +
+            "</p>";
+        }
+
+        container.innerHTML =
+          html;
+
+        /*
+         * COPY BUTTONS
+         */
+        container
+          .querySelectorAll(
+            ".report-copy-contact"
+          )
+          .forEach(
+            function (btn) {
+              btn.addEventListener(
+                "click",
+                function () {
+                  var value =
+                    btn.getAttribute(
+                      "data-copy-value"
+                    );
+
+                  if (
+                    navigator.clipboard &&
+                    navigator.clipboard.writeText
+                  ) {
+                    navigator.clipboard
+                      .writeText(
+                        value
+                      )
+                      .catch(
+                        function () {}
+                      );
+                  }
+
+                  var original =
+                    btn.textContent;
+
+                  btn.textContent =
+                    "Copied!";
+
+                  setTimeout(
+                    function () {
+                      btn.textContent =
+                        original;
+                    },
+                    1500
+                  );
+                }
+              );
+            }
+          );
+      }
+    );
+  }
+
+  /* =======================================================================
+     REPORT EVENT LISTENERS
+     ======================================================================= */
+
+  if (reportForm) {
+    reportForm.addEventListener(
+      "submit",
+      generateReport
+    );
+  }
+
+  if (reportCopyBtn) {
+    reportCopyBtn.addEventListener(
+      "click",
+      copyReport
+    );
+  }
+
+  if (reportClearBtn) {
+    reportClearBtn.addEventListener(
+      "click",
+      clearReportForm
+    );
+  }
+
+  /* =======================================================================
+     SETTINGS
+     ======================================================================= */
+
+  function loadPreferences() {
+    try {
+      return (
+        JSON.parse(
+          localStorage.getItem(
+            "cv-prefs"
+          )
+        ) || {}
+      );
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function savePreferences(
+    prefs
+  ) {
+    try {
+      localStorage.setItem(
+        "cv-prefs",
+        JSON.stringify(
+          prefs
+        )
+      );
+    } catch (e) {}
+  }
+
+  function applyPreferences(
+    prefs
+  ) {
+    prefs =
+      prefs || {};
+
+    document.documentElement.classList.toggle(
+      "dark-mode",
+      !!prefs.darkMode
+    );
+
+    document.documentElement.classList.toggle(
+      "large-text",
+      !!prefs.largeText
+    );
+
+    document.documentElement.classList.toggle(
+      "reduced-motion",
+      !!prefs.reducedMotion
+    );
+
+    var d =
+      $("setting-dark-mode");
+
+    var l =
+      $("setting-large-text");
+
+    var m =
+      $("setting-reduced-motion");
+
+    if (d) {
+      d.checked =
+        !!prefs.darkMode;
+    }
+
+    if (l) {
+      l.checked =
+        !!prefs.largeText;
+    }
+
+    if (m) {
+      m.checked =
+        !!prefs.reducedMotion;
+    }
+  }
+
+  function handleToggleChange(
+    key,
+    el
+  ) {
+    if (!el) {
+      return;
+    }
+
+    var p =
+      loadPreferences();
+
+    p[key] =
+      el.checked;
+
+    savePreferences(p);
+
+    applyPreferences(p);
+  }
+
+  /* =======================================================================
+     INITIALISATION
+     ======================================================================= */
+
+  document.addEventListener(
+    "DOMContentLoaded",
+    function () {
+      var darkToggle =
+        $("setting-dark-mode");
+
+      var textToggle =
+        $("setting-large-text");
+
+      var motionToggle =
+        $("setting-reduced-motion");
+
+      if (darkToggle) {
+        darkToggle.addEventListener(
+          "change",
+          function () {
+            handleToggleChange(
+              "darkMode",
+              darkToggle
+            );
+          }
+        );
+      }
+
+      if (textToggle) {
+        textToggle.addEventListener(
+          "change",
+          function () {
+            handleToggleChange(
+              "largeText",
+              textToggle
+            );
+          }
+        );
+      }
+
+      if (motionToggle) {
+        motionToggle.addEventListener(
+          "change",
+          function () {
+            handleToggleChange(
+              "reducedMotion",
+              motionToggle
+            );
+          }
+        );
+      }
+
+      var resetBtn =
+        $("settings-reset-btn");
+
+      if (resetBtn) {
+        resetBtn.addEventListener(
+          "click",
+          function () {
+            savePreferences(
+              {}
+            );
+
+            applyPreferences(
+              {}
+            );
+
+            var confirmEl =
+              $("settings-reset-confirm");
+
+            if (confirmEl) {
+              confirmEl.hidden =
+                false;
+
+              setTimeout(
+                function () {
+                  confirmEl.hidden =
+                    true;
+                },
+                1800
+              );
+            }
+          }
+        );
+      }
+
+      var countEl =
+        $("settings-institution-count");
+
+      if (
+        countEl &&
+        typeof INSTITUTIONS !==
+          "undefined" &&
+        Array.isArray(
+          INSTITUTIONS
+        )
+      ) {
+        countEl.textContent =
+          INSTITUTIONS.length;
+      }
+
+      renderImpactStats();
+
+      applyPreferences(
+        loadPreferences()
+      );
+
+      renderReportChannels();
+      renderReportInstitutionContacts();
+
+      activateCheckType(
+        activeCheckType
+      );
+    }
+  );
+})();
