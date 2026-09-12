@@ -83,6 +83,8 @@ const JS_RENDER_MIN_TEXT_LENGTH = 200;
 
 const MAX_JS_RENDER_TIME_MS = 15000;
 
+const CRAWL_CONCURRENCY = 6;
+
 
 /* =========================================================================
    PRIORITY KEYWORDS
@@ -4083,21 +4085,42 @@ async function crawlInstitution(
 
   /* -----------------------------------------------------------------------
      MAIN CRAWL
+     -----------------------------------------------------------------------
+     CONCURRENT VERSION.
+
+     WHY:
+     The previous version fetched one page at a time (await inside the
+     while loop), so N pages cost roughly N * (time per page). Homepage +
+     6 seed pages (3 of them PDFs) alone could take 10-20+ seconds before
+     the student saw anything.
+
+     This version keeps the exact same queue, scoring, visited-tracking,
+     enqueue(), MAX_PAGES_PER_INSTITUTION and crawl-time-limit behavior.
+     The only change is that up to CRAWL_CONCURRENCY pages are ever
+     in-flight to the same institution's server at once, instead of 1.
+     Nothing about which pages get crawled, what evidence gets extracted,
+     or how results are merged is different — only the scheduling.
      ----------------------------------------------------------------------- */
 
-  while (
-    queue.length > 0 &&
-    visited.size <
-      MAX_PAGES_PER_INSTITUTION &&
-    !crawlTimeExceeded(
-      startTime
-    )
-  ) {
+  var active = [];
+
+  function launchNext() {
+    if (
+      queue.length === 0 ||
+      visited.size >=
+        MAX_PAGES_PER_INSTITUTION ||
+      crawlTimeExceeded(
+        startTime
+      )
+    ) {
+      return false;
+    }
+
     var current =
       queue.shift();
 
     if (!current) {
-      break;
+      return false;
     }
 
     if (
@@ -4105,15 +4128,20 @@ async function crawlInstitution(
         current.url
       )
     ) {
-      continue;
+      /*
+       * Already visited (can happen if the same URL was enqueued twice
+       * before either copy was picked up). Skip and let the caller try
+       * the next queue entry on its next loop iteration.
+       */
+      return true;
     }
 
     visited.add(
       current.url
     );
 
-    var newLinks =
-      await fetchPage(
+    var promise =
+      fetchPage(
         current.url,
 
         institution,
@@ -4121,25 +4149,107 @@ async function crawlInstitution(
         itemLists,
 
         pageStatus
-      );
+      )
+        .then(function (newLinks) {
+          newLinks.forEach(
+            function (item) {
+              if (
+                !item ||
+                !item.url
+              ) {
+                return;
+              }
 
-    newLinks.forEach(
-      function (item) {
-        if (
-          !item ||
-          !item.url
-        ) {
-          return;
-        }
+              enqueue(
+                item.url,
 
-        enqueue(
-          item.url,
+                current.depth + 1,
 
-          current.depth + 1,
+                item.score || 0
+              );
+            }
+          );
+        })
+        .catch(function (err) {
+          /*
+           * fetchPage() already catches its own errors and records them
+           * in pageStatus, but this guards against any unexpected
+           * rejection so one bad page can never stall the whole batch.
+           */
+          console.error(
+            "CampusVerify concurrent crawl task failed:",
+            current.url,
+            err &&
+              err.message
+          );
+        })
+        .finally(function () {
+          var idx =
+            active.indexOf(
+              promise
+            );
 
-          item.score || 0
-        );
-      }
+          if (idx !== -1) {
+            active.splice(
+              idx,
+              1
+            );
+          }
+        });
+
+    active.push(
+      promise
+    );
+
+    return true;
+  }
+
+  while (
+    (
+      queue.length > 0 ||
+      active.length > 0
+    ) &&
+    visited.size <
+      MAX_PAGES_PER_INSTITUTION &&
+    !crawlTimeExceeded(
+      startTime
+    )
+  ) {
+    while (
+      active.length <
+        CRAWL_CONCURRENCY &&
+      queue.length > 0 &&
+      visited.size <
+        MAX_PAGES_PER_INSTITUTION &&
+      !crawlTimeExceeded(
+        startTime
+      )
+    ) {
+      launchNext();
+    }
+
+    if (active.length === 0) {
+      break;
+    }
+
+    /*
+     * Wait for at least one in-flight fetch to finish, then loop back
+     * around to top up the batch with newly-discovered/queued URLs.
+     */
+    await Promise.race(
+      active
+    );
+  }
+
+  /*
+   * If we broke out early (time or page limit hit) while requests were
+   * still in flight, let them settle so pageStatus/itemLists reflect
+   * everything that was actually fetched rather than being cut off
+   * mid-write.
+   */
+  if (active.length > 0) {
+    await Promise.allSettled(
+      active
     );
   }
 
