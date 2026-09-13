@@ -1,21 +1,16 @@
 /* =========================================================================
-   CampusVerify v3.4 — script.js
-   -----------------------------------------------------------------------
+   CampusVerify v3.5 — script.js
+   -------------------------------------------------------------------------
    Website-first institution verification frontend.
 
-   Core principles:
-   - Student starts by entering an institution website.
-   - institutions.js decides whether the institution is supported.
-   - crawler.js checks the institution's approved official website.
-   - Evidence comes from publicly available institutional sources.
-   - Bank-name-only matches NEVER prove a specific account is legitimate.
-   - A specific payment record is considered institution-published only when
-     the actual record was found in an official source.
-   - "Not found" is NOT automatically treated as fraud.
-   - Incomplete crawling is clearly disclosed to the student.
-   - Report Centre requires an identified institution.
-   - Institution-specific reporting contacts are loaded from:
-       data/reporting/<institution-id>.json
+   Fixes:
+   - Exact payment records no longer crash on renderPaymentEvidence().
+   - Evidence matches remain valid even when the live crawl is incomplete.
+   - Incomplete crawl is disclosed only when the requested information was
+     NOT found in the available evidence.
+   - Phone matching has a local fallback normaliser.
+   - Official evidence sources are preserved.
+   - Reporting Centre remains institution-specific.
    ========================================================================= */
 
 (function () {
@@ -36,13 +31,6 @@
   var activeCheckType = "phone";
   var activeFilter = "all";
 
-  /*
-   * Information from the most recent verification.
-   *
-   * This allows an "Unable to fully verify" result to send the student
-   * directly to the Report Centre with the checked information already
-   * filled in.
-   */
   var lastVerification = {
     type: null,
     value: "",
@@ -50,7 +38,7 @@
   };
 
   /* =======================================================================
-     DOM HELPERS
+     HELPERS
      ======================================================================= */
 
   function $(id) {
@@ -82,6 +70,43 @@
       .toLowerCase();
   }
 
+  function normaliseName(value) {
+    return safeText(value)
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function normaliseAccountNumber(value) {
+    return safeText(value).replace(/\D/g, "");
+  }
+
+  /*
+   * Phone normalisation is kept here so this file does not depend on
+   * another script defining normalisePhone().
+   */
+  function normalisePhone(value) {
+    var digits = safeText(value).replace(/\D/g, "");
+
+    if (!digits) {
+      return "";
+    }
+
+    if (digits.indexOf("260") === 0) {
+      return digits.slice(3);
+    }
+
+    if (digits.length === 10 && digits.charAt(0) === "0") {
+      return digits.slice(1);
+    }
+
+    if (digits.length === 9) {
+      return digits;
+    }
+
+    return digits;
+  }
+
   function isValidHttpUrl(value) {
     try {
       var url = new URL(value);
@@ -95,8 +120,20 @@
     }
   }
 
+  function unwrapRecord(item) {
+    if (
+      item &&
+      item.value &&
+      typeof item.value === "object"
+    ) {
+      return item.value;
+    }
+
+    return item || null;
+  }
+
   /* =======================================================================
-     STEP 1 — IDENTIFY INSTITUTION
+     INSTITUTION
      ======================================================================= */
 
   var identifyForm = $("identify-form");
@@ -110,17 +147,10 @@
   var stepIdentify = $("step-identify");
   var stepChooseType = $("step-choose-type");
 
-  var changeInstitutionBtn =
-    $("change-institution-btn");
-
-  var visitSiteBtn =
-    $("visit-official-site-btn");
-
-  var verifyNowBtn =
-    $("verify-something-now-btn");
-
-  var statusBadge =
-    $("institution-status-badge");
+  var changeInstitutionBtn = $("change-institution-btn");
+  var visitSiteBtn = $("visit-official-site-btn");
+  var verifyNowBtn = $("verify-something-now-btn");
+  var statusBadge = $("institution-status-badge");
 
   var STATUS_BADGE_TEXT = {
     partner: "✓ CampusVerify Partner Institution",
@@ -154,9 +184,7 @@
       return null;
     }
 
-    return getInstitutionById(
-      currentInstitutionId
-    );
+    return getInstitutionById(currentInstitutionId);
   }
 
   function setInstitution(inst) {
@@ -181,9 +209,7 @@
         getOfficialSiteUrl(inst);
 
       if (officialSiteUrl) {
-        visitSiteBtn.href =
-          officialSiteUrl;
-
+        visitSiteBtn.href = officialSiteUrl;
         visitSiteBtn.target = "_blank";
         visitSiteBtn.rel = "noopener";
       }
@@ -211,9 +237,6 @@
       identifyError.hidden = true;
     }
 
-    /*
-     * Clear any previous verification when switching institution.
-     */
     lastVerification = {
       type: null,
       value: "",
@@ -222,10 +245,6 @@
 
     hideResultCard();
 
-    /*
-     * Begin crawling immediately so the data is ready when the student
-     * presses "Verify Something Now".
-     */
     crawlInstitution(
       currentInstitutionId
     ).then(function () {
@@ -257,10 +276,9 @@
       function (event) {
         event.preventDefault();
 
-        var raw =
-          identifyInput
-            ? identifyInput.value.trim()
-            : "";
+        var raw = identifyInput
+          ? identifyInput.value.trim()
+          : "";
 
         if (!raw) {
           if (identifyError) {
@@ -287,10 +305,6 @@
           return;
         }
 
-        /*
-         * The frontend does not automatically trust or crawl an arbitrary
-         * website. institutions.js must approve the institution first.
-         */
         var inst =
           typeof getInstitutionByUrl === "function"
             ? getInstitutionByUrl(raw)
@@ -352,8 +366,7 @@
      ======================================================================= */
 
   function updateCrawlStatus(data) {
-    var statusEl =
-      $("crawl-status");
+    var statusEl = $("crawl-status");
 
     if (!statusEl) {
       return;
@@ -373,13 +386,10 @@
 
     var checkedText =
       data.checkedAt
-        ? new Date(
-            data.checkedAt
-          ).toLocaleString()
+        ? new Date(data.checkedAt).toLocaleString()
         : "just now";
 
-    var stats =
-      data.crawlStats || {};
+    var stats = data.crawlStats || {};
 
     var pageCount =
       stats.pagesCrawled ||
@@ -390,8 +400,7 @@
       0;
 
     var message =
-      "Last checked " +
-      checkedText;
+      "Last checked " + checkedText;
 
     if (pageCount) {
       message +=
@@ -413,33 +422,20 @@
   function createFallbackCrawl(institutionId) {
     var institution =
       typeof getInstitutionById === "function"
-        ? getInstitutionById(
-            institutionId
-          )
+        ? getInstitutionById(institutionId)
         : null;
 
     return {
-      institutionId:
-        institutionId,
-
-      institutionName:
-        institution
-          ? institution.name
-          : "",
-
-      domain:
-        institution
-          ? institution.domain
-          : "",
-
-      officialUrl:
-        institution
-          ? (
-              getOfficialSiteUrl(
-                institution
-              ) || ""
-            )
-          : "",
+      institutionId: institutionId,
+      institutionName: institution
+        ? institution.name
+        : "",
+      domain: institution
+        ? institution.domain
+        : "",
+      officialUrl: institution
+        ? getOfficialSiteUrl(institution) || ""
+        : "",
 
       items: {
         phones: [],
@@ -460,9 +456,7 @@
 
       dataComplete: false,
       crawlFailed: true,
-
-      checkedAt:
-        new Date().toISOString()
+      checkedAt: new Date().toISOString()
     };
   }
 
@@ -484,13 +478,10 @@
     }
 
     if (crawlInFlight[institutionId]) {
-      return crawlInFlight[
-        institutionId
-      ];
+      return crawlInFlight[institutionId];
     }
 
-    var statusEl =
-      $("crawl-status");
+    var statusEl = $("crawl-status");
 
     if (statusEl) {
       statusEl.textContent =
@@ -499,9 +490,7 @@
 
     var requestUrl =
       "/api/crawler?institution=" +
-      encodeURIComponent(
-        institutionId
-      );
+      encodeURIComponent(institutionId);
 
     var req =
       fetch(requestUrl, {
@@ -514,8 +503,7 @@
         .then(function (res) {
           if (!res.ok) {
             throw new Error(
-              "crawler_http_" +
-              res.status
+              "crawler_http_" + res.status
             );
           }
 
@@ -523,30 +511,21 @@
         })
 
         .then(function (data) {
-          data =
-            data || {};
-
-          data.items =
-            data.items || {};
+          data = data || {};
+          data.items = data.items || {};
 
           data.items.phones =
-            Array.isArray(
-              data.items.phones
-            )
+            Array.isArray(data.items.phones)
               ? data.items.phones
               : [];
 
           data.items.emails =
-            Array.isArray(
-              data.items.emails
-            )
+            Array.isArray(data.items.emails)
               ? data.items.emails
               : [];
 
           data.items.bankNames =
-            Array.isArray(
-              data.items.bankNames
-            )
+            Array.isArray(data.items.bankNames)
               ? data.items.bankNames
               : [];
 
@@ -570,9 +549,7 @@
               : [];
 
           data.pagesCrawled =
-            Array.isArray(
-              data.pagesCrawled
-            )
+            Array.isArray(data.pagesCrawled)
               ? data.pagesCrawled
               : [];
 
@@ -583,8 +560,7 @@
             data.checkedAt ||
             new Date().toISOString();
 
-          crawlCache[institutionId] =
-            data;
+          crawlCache[institutionId] = data;
 
           delete crawlInFlight[
             institutionId
@@ -608,15 +584,12 @@
           crawlCache[institutionId] =
             fallback;
 
-          updateCrawlStatus(
-            fallback
-          );
+          updateCrawlStatus(fallback);
 
           return fallback;
         });
 
-    crawlInFlight[institutionId] =
-      req;
+    crawlInFlight[institutionId] = req;
 
     return req;
   }
@@ -626,19 +599,13 @@
      ======================================================================= */
 
   var pages =
-    document.querySelectorAll(
-      ".page"
-    );
+    document.querySelectorAll(".page");
 
   var tabs =
-    document.querySelectorAll(
-      ".tab"
-    );
+    document.querySelectorAll(".tab");
 
   var gotoButtons =
-    document.querySelectorAll(
-      "[data-goto]"
-    );
+    document.querySelectorAll("[data-goto]");
 
   function showReportAccessMessage() {
     var existing =
@@ -673,56 +640,38 @@
   }
 
   function showPage(pageName) {
-    /*
-     * Report Centre is institution-specific.
-     *
-     * Do not allow a report to be opened before an institution has been
-     * identified.
-     */
     if (
       pageName === "report" &&
       !currentInstitutionId
     ) {
-      pages.forEach(
-        function (page) {
-          page.hidden =
-            page.dataset.page !==
-            "verify";
-        }
-      );
+      pages.forEach(function (page) {
+        page.hidden =
+          page.dataset.page !== "verify";
+      });
 
-      tabs.forEach(
-        function (tab) {
-          tab.classList.toggle(
-            "is-active",
-            tab.dataset.goto ===
-              "verify"
-          );
-        }
-      );
+      tabs.forEach(function (tab) {
+        tab.classList.toggle(
+          "is-active",
+          tab.dataset.goto === "verify"
+        );
+      });
 
       showReportAccessMessage();
 
       return;
     }
 
-    pages.forEach(
-      function (page) {
-        page.hidden =
-          page.dataset.page !==
-          pageName;
-      }
-    );
+    pages.forEach(function (page) {
+      page.hidden =
+        page.dataset.page !== pageName;
+    });
 
-    tabs.forEach(
-      function (tab) {
-        tab.classList.toggle(
-          "is-active",
-          tab.dataset.goto ===
-            pageName
-        );
-      }
-    );
+    tabs.forEach(function (tab) {
+      tab.classList.toggle(
+        "is-active",
+        tab.dataset.goto === pageName
+      );
+    });
 
     window.scrollTo({
       top: 0,
@@ -739,21 +688,17 @@
     }
   }
 
-  gotoButtons.forEach(
-    function (btn) {
-      btn.addEventListener(
-        "click",
-        function () {
-          showPage(
-            btn.dataset.goto
-          );
-        }
-      );
-    }
-  );
+  gotoButtons.forEach(function (btn) {
+    btn.addEventListener(
+      "click",
+      function () {
+        showPage(btn.dataset.goto);
+      }
+    );
+  });
 
   /* =======================================================================
-     VERIFICATION TYPE TILES
+     VERIFICATION TYPES
      ======================================================================= */
 
   var typeTiles =
@@ -815,27 +760,20 @@
 
     activeCheckType = type;
 
-    typeTiles.forEach(
-      function (tile) {
-        tile.classList.toggle(
-          "is-active",
-          tile.dataset.type ===
-            activeCheckType
-        );
-      }
-    );
+    typeTiles.forEach(function (tile) {
+      tile.classList.toggle(
+        "is-active",
+        tile.dataset.type === activeCheckType
+      );
+    });
 
     var meta =
-      typeMeta[
-        activeCheckType
-      ];
+      typeMeta[activeCheckType];
 
     hideResultCard();
 
     if (verifyInput) {
-      verifyInput.hidden =
-        meta.isFreeText;
-
+      verifyInput.hidden = meta.isFreeText;
       verifyInput.value = "";
 
       if (!meta.isFreeText) {
@@ -877,46 +815,20 @@
     }
   }
 
-  typeTiles.forEach(
-    function (tile) {
-      tile.addEventListener(
-        "click",
-        function () {
-          activateCheckType(
-            tile.dataset.type
-          );
-        }
-      );
-    }
-  );
+  typeTiles.forEach(function (tile) {
+    tile.addEventListener(
+      "click",
+      function () {
+        activateCheckType(
+          tile.dataset.type
+        );
+      }
+    );
+  });
 
   /* =======================================================================
-     PAYMENT RECORD HELPERS
+     MATCHING
      ======================================================================= */
-
-  function unwrapRecord(item) {
-    if (
-      item &&
-      item.value &&
-      typeof item.value === "object"
-    ) {
-      return item.value;
-    }
-
-    return item || null;
-  }
-
-  function normaliseAccountNumber(value) {
-    return safeText(value)
-      .replace(/\D/g, "");
-  }
-
-  function normaliseName(value) {
-    return safeText(value)
-      .toLowerCase()
-      .replace(/\s+/g, " ")
-      .trim();
-  }
 
   function findPaymentRecordMatch(
     inputValue,
@@ -962,6 +874,10 @@
             }
           }
 
+          /*
+           * Account-name matching is only allowed when the user input
+           * contains no digits.
+           */
           if (
             !/\d/.test(v) &&
             rec.accountName
@@ -972,8 +888,7 @@
               );
 
             if (
-              recordName ===
-              inputName
+              recordName === inputName
             ) {
               return true;
             }
@@ -1059,41 +974,28 @@
     );
   }
 
-  /* =======================================================================
-     PHONE / EMAIL / LINK MATCHING
-     ======================================================================= */
-
   function findPhoneMatch(
     inputValue,
     phoneItems
   ) {
-    if (
-      typeof normalisePhone !==
-      "function"
-    ) {
-      return null;
-    }
+    var input =
+      normalisePhone(inputValue);
 
-    var inNorm =
-      normalisePhone(
-        inputValue
-      );
-
-    if (
-      !inNorm ||
-      inNorm.length !== 9
-    ) {
+    if (!input) {
       return null;
     }
 
     return (
       (phoneItems || []).find(
         function (item) {
-          return (
+          var itemValue =
             normalisePhone(
-              item &&
-                item.value
-            ) === inNorm
+              item && item.value
+            );
+
+          return (
+            itemValue &&
+            itemValue === input
           );
         }
       ) || null
@@ -1116,8 +1018,7 @@
         function (item) {
           return (
             normaliseName(
-              item &&
-                item.value
+              item && item.value
             ) === v
           );
         }
@@ -1131,8 +1032,7 @@
     institution
   ) {
     var raw =
-      safeText(inputValue)
-        .trim();
+      safeText(inputValue).trim();
 
     if (!raw) {
       return null;
@@ -1147,9 +1047,8 @@
 
     try {
       candidateHost =
-        new URL(
-          candidate
-        ).hostname
+        new URL(candidate)
+          .hostname
           .toLowerCase()
           .replace(/^www\./, "");
     } catch (e) {
@@ -1174,8 +1073,7 @@
     if (
       officialDomain &&
       (
-        candidateHost ===
-          officialDomain ||
+        candidateHost === officialDomain ||
         candidateHost.endsWith(
           "." + officialDomain
         )
@@ -1184,9 +1082,9 @@
       return {
         value: raw,
         source:
-          "https://" +
-          officialDomain +
-          "/"
+          getOfficialSiteUrl(
+            institution
+          ) || candidate
       };
     }
 
@@ -1194,8 +1092,7 @@
       (sources || []).find(
         function (source) {
           var src =
-            safeText(source)
-              .trim();
+            safeText(source).trim();
 
           if (!src) {
             return false;
@@ -1212,19 +1109,18 @@
 
             return (
               normaliseUrl(src) ===
-                normaliseUrl(
-                  raw
-                ) ||
+                normaliseUrl(raw) ||
               (
                 candidateHost &&
-                srcHost ===
-                  candidateHost &&
-                normaliseUrl(raw)
-                  .startsWith(
-                    normaliseUrl(
-                      src
-                    )
+                srcHost === candidateHost &&
+                (
+                  normaliseUrl(raw).startsWith(
+                    normaliseUrl(src)
+                  ) ||
+                  normaliseUrl(src).startsWith(
+                    normaliseUrl(raw)
                   )
+                )
               )
             );
           } catch (e) {
@@ -1245,29 +1141,23 @@
   }
 
   /* =======================================================================
-     SCAM MESSAGE SCANNING
+     SCAM MESSAGE CHECK
      ======================================================================= */
 
   function scanMessage(rawMessage) {
     var lower =
-      safeText(rawMessage)
-        .toLowerCase();
+      safeText(rawMessage).toLowerCase();
 
     var matches = [];
 
     if (
-      typeof SCAM_PATTERNS !==
-      "undefined" &&
-      Array.isArray(
-        SCAM_PATTERNS
-      )
+      typeof SCAM_PATTERNS !== "undefined" &&
+      Array.isArray(SCAM_PATTERNS)
     ) {
       SCAM_PATTERNS.forEach(
         function (pattern) {
           var triggers =
-            Array.isArray(
-              pattern.triggers
-            )
+            Array.isArray(pattern.triggers)
               ? pattern.triggers
               : [];
 
@@ -1276,8 +1166,7 @@
               function (t) {
                 return (
                   lower.indexOf(
-                    safeText(t)
-                      .toLowerCase()
+                    safeText(t).toLowerCase()
                   ) !== -1
                 );
               }
@@ -1323,20 +1212,11 @@
   }
 
   var resultClassMap = {
-    found:
-      "result-card--success",
-
-    partial:
-      "result-card--warning",
-
-    notfound:
-      "result-card--warning",
-
-    clean:
-      "result-card--neutral",
-
-    flagged:
-      "result-card--warning"
+    found: "result-card--success",
+    partial: "result-card--warning",
+    notfound: "result-card--warning",
+    clean: "result-card--neutral",
+    flagged: "result-card--warning"
   };
 
   function renderResult(
@@ -1387,21 +1267,14 @@
       "<span class=\"notice-tag\">Verification Evidence</span>" +
 
       "<p><strong>Information checked:</strong> " +
-      escapeHtml(
-        checkedValue
-      ) +
+      escapeHtml(checkedValue) +
       "</p>" +
 
       "<p><strong>Result:</strong> " +
-      escapeHtml(
-        resultLabel
-      ) +
+      escapeHtml(resultLabel) +
       "</p>" +
 
-      (
-        extraHtml ||
-        ""
-      ) +
+      (extraHtml || "") +
 
       (
         checkedAt
@@ -1426,8 +1299,105 @@
     evidenceCard.hidden = false;
   }
 
+  /*
+   * FIX:
+   * This function was being called by the bank verification code but did
+   * not exist in v3.4.
+   */
+  function renderPaymentEvidence(
+    checkedValue,
+    paymentMatch,
+    checkedAt
+  ) {
+    var record =
+      unwrapRecord(paymentMatch);
+
+    if (!record) {
+      renderEvidence(
+        checkedValue,
+        "Published by Institution",
+        null,
+        checkedAt
+      );
+
+      return;
+    }
+
+    var source =
+      record.source ||
+      (
+        paymentMatch &&
+        paymentMatch.source
+      ) ||
+      null;
+
+    var details = "";
+
+    if (record.bankName) {
+      details +=
+        "<p><strong>Bank:</strong> " +
+        escapeHtml(
+          record.bankName
+        ) +
+        "</p>";
+    }
+
+    if (record.accountNumber) {
+      details +=
+        "<p><strong>Account number:</strong> " +
+        escapeHtml(
+          record.accountNumber
+        ) +
+        "</p>";
+    }
+
+    if (record.accountName) {
+      details +=
+        "<p><strong>Account name:</strong> " +
+        escapeHtml(
+          record.accountName
+        ) +
+        "</p>";
+    }
+
+    if (record.branch) {
+      details +=
+        "<p><strong>Branch:</strong> " +
+        escapeHtml(
+          record.branch
+        ) +
+        "</p>";
+    }
+
+    if (record.context) {
+      details +=
+        "<p><strong>Payment context:</strong> " +
+        escapeHtml(
+          record.context
+        ) +
+        "</p>";
+    }
+
+    if (record.pageTitle) {
+      details +=
+        "<p><strong>Source page:</strong> " +
+        escapeHtml(
+          record.pageTitle
+        ) +
+        "</p>";
+    }
+
+    renderEvidence(
+      checkedValue,
+      "Published by Institution",
+      source,
+      checkedAt,
+      details
+    );
+  }
+
   /* =======================================================================
-     REPORT CTA
+     VERIFICATION MEMORY / REPORT CTA
      ======================================================================= */
 
   function rememberVerification(
@@ -1536,59 +1506,114 @@
       $("report-description");
 
     if (
-      lastVerification.type ===
-      "phone"
+      lastVerification.type === "phone" &&
+      phoneEl
     ) {
-      if (phoneEl) {
-        phoneEl.value =
-          value;
-      }
+      phoneEl.value = value;
     }
 
     if (
-      lastVerification.type ===
-      "email"
+      lastVerification.type === "email" &&
+      emailEl
     ) {
-      if (emailEl) {
-        emailEl.value =
-          value;
-      }
+      emailEl.value = value;
     }
 
     if (
-      lastVerification.type ===
-      "bank"
+      lastVerification.type === "bank" &&
+      bankEl
     ) {
-      if (bankEl) {
-        bankEl.value =
-          value;
-      }
+      bankEl.value = value;
     }
 
     if (
-      lastVerification.type ===
-      "link"
+      lastVerification.type === "link" &&
+      descEl
     ) {
-      if (descEl) {
-        descEl.value =
-          descEl.value.trim()
-            ? descEl.value
-            : "Suspicious website or link checked by CampusVerify:\n" +
-              value;
-      }
+      descEl.value =
+        descEl.value.trim()
+          ? descEl.value
+          : "Suspicious website or link checked by CampusVerify:\n" +
+            value;
     }
 
     if (
-      lastVerification.type ===
-      "other"
+      lastVerification.type === "other" &&
+      descEl
     ) {
-      if (descEl) {
-        descEl.value =
-          descEl.value.trim()
-            ? descEl.value
-            : "Suspicious message checked by CampusVerify:\n\n" +
-              value;
-      }
+      descEl.value =
+        descEl.value.trim()
+          ? descEl.value
+          : "Suspicious message checked by CampusVerify:\n\n" +
+            value;
+    }
+  }
+
+  /* =======================================================================
+     IMPORTANT: INCOMPLETE CRAWL HANDLING
+     ======================================================================= */
+
+  function renderNotFoundResult(
+    data,
+    institution,
+    value,
+    category
+  ) {
+    /*
+     * An incomplete live crawl does not automatically invalidate the
+     * evidence already returned by the crawler/evidence layer.
+     *
+     * This function is only reached when no matching item was found.
+     */
+    var incomplete =
+      !data.dataComplete;
+
+    var institutionName =
+      data.institutionName ||
+      (
+        institution &&
+        institution.name
+      ) ||
+      "the institution";
+
+    rememberVerification(
+      activeCheckType,
+      value
+    );
+
+    renderResult(
+      incomplete
+        ? "partial"
+        : "notfound",
+
+      incomplete
+        ? "🟡 Unable to fully verify"
+        : "🔴 Not found on official sources",
+
+      (
+        incomplete
+          ? "Some official pages could not be checked, so this isn't a complete result. "
+          : ""
+      ) +
+
+      "CampusVerify could not find this " +
+      escapeHtml(category) +
+      " on " +
+      escapeHtml(institutionName) +
+      "'s official sources. This isn't automatic proof of fraud — confirm directly with the institution before proceeding."
+    );
+
+    renderEvidence(
+      value,
+      incomplete
+        ? "Incomplete"
+        : "Not found",
+      null,
+      data.checkedAt
+    );
+
+    if (incomplete) {
+      addReportCentreButton();
     }
   }
 
@@ -1627,11 +1652,8 @@
     } catch (e) {}
   }
 
-  function logVerification(
-    flagged
-  ) {
-    var s =
-      loadStats();
+  function logVerification(flagged) {
+    var s = loadStats();
 
     s.total++;
 
@@ -1640,24 +1662,20 @@
     }
 
     saveStats(s);
-
     renderImpactStats();
   }
 
   function logReport() {
-    var s =
-      loadStats();
+    var s = loadStats();
 
     s.reports++;
 
     saveStats(s);
-
     renderImpactStats();
   }
 
   function renderImpactStats() {
-    var s =
-      loadStats();
+    var s = loadStats();
 
     var totalEl =
       $("impact-total");
@@ -1685,84 +1703,19 @@
   }
 
   /* =======================================================================
-     VERIFICATION FORM
+     VERIFICATION
      ======================================================================= */
 
   var verifyEmptyWarning =
     $("verify-empty-warning");
 
-  function renderNotFoundResult(
-    data,
-    institution,
-    value,
-    category
-  ) {
-    var incomplete =
-      !data.dataComplete;
-
-    var institutionName =
-      data.institutionName ||
-      (
-        institution &&
-        institution.name
-      ) ||
-      "the institution";
-
-    rememberVerification(
-      activeCheckType,
-      value
-    );
-
-    renderResult(
-      incomplete
-        ? "partial"
-        : "notfound",
-
-      incomplete
-        ? "🟡 Unable to fully verify"
-        : "🔴 Not found on official sources",
-
-      (
-        incomplete
-          ? "Some official pages could not be checked, so this isn't a complete result. "
-          : ""
-      ) +
-
-      "CampusVerify could not find this " +
-      escapeHtml(
-        category
-      ) +
-      " on " +
-      escapeHtml(
-        institutionName
-      ) +
-      "'s official sources. This isn't automatic proof of fraud — confirm directly with the institution before proceeding."
-    );
-
-    renderEvidence(
-      value,
-      incomplete
-        ? "Incomplete"
-        : "Not found",
-      null,
-      data.checkedAt
-    );
-
-    if (incomplete) {
-      addReportCentreButton();
-    }
-  }
-
-  function submitVerification(
-    event
-  ) {
+  function submitVerification(event) {
     event.preventDefault();
 
     hideResultCard();
 
     if (verifyEmptyWarning) {
-      verifyEmptyWarning.hidden =
-        true;
+      verifyEmptyWarning.hidden = true;
     }
 
     if (!currentInstitutionId) {
@@ -1779,16 +1732,14 @@
       getCurrentInstitution();
 
     var meta =
-      typeMeta[
-        activeCheckType
-      ];
+      typeMeta[activeCheckType];
 
     if (!meta) {
       return;
     }
 
     /* ---------------------------------------------------------------------
-       FREE TEXT / SCAM CHECK
+       FREE TEXT
        --------------------------------------------------------------------- */
 
     if (meta.isFreeText) {
@@ -1815,23 +1766,21 @@
         scanMessage(msg);
 
       if (matches.length) {
-        var items =
+        var matchItems =
           matches
-            .map(
-              function (m) {
-                return (
-                  "<li><strong>" +
-                  escapeHtml(
-                    m.category
-                  ) +
-                  ":</strong> " +
-                  escapeHtml(
-                    m.explanation
-                  ) +
-                  "</li>"
-                );
-              }
-            )
+            .map(function (m) {
+              return (
+                "<li><strong>" +
+                escapeHtml(
+                  m.category
+                ) +
+                ":</strong> " +
+                escapeHtml(
+                  m.explanation
+                ) +
+                "</li>"
+              );
+            })
             .join("");
 
         if (resultCard) {
@@ -1841,11 +1790,10 @@
           resultCard.innerHTML =
             "<strong>🔴 Scam indicators found</strong>" +
             "<ul class=\"result-list\">" +
-            items +
+            matchItems +
             "</ul>";
 
-          resultCard.hidden =
-            false;
+          resultCard.hidden = false;
         }
 
         renderEvidence(
@@ -1855,11 +1803,8 @@
                 ? "…"
                 : ""
             ),
-
           "Documented scam pattern(s) matched",
-
           null,
-
           new Date().toISOString()
         );
 
@@ -1878,7 +1823,7 @@
     }
 
     /* ---------------------------------------------------------------------
-       NORMAL VERIFICATION
+       NORMAL INPUT
        --------------------------------------------------------------------- */
 
     var value =
@@ -1902,225 +1847,305 @@
 
     crawlInstitution(
       currentInstitutionId
-    ).then(
-      function (data) {
-        if (
-          !data ||
-          data.crawlFailed
-        ) {
+    ).then(function (data) {
+      if (!data) {
+        renderResult(
+          "partial",
+          "🟡 Unable to check right now",
+          "CampusVerify could not obtain verification data at this moment. Please try again shortly."
+        );
+
+        addReportCentreButton();
+
+        return;
+      }
+
+      /*
+       * IMPORTANT:
+       *
+       * Do not immediately reject the entire result when crawlFailed is
+       * true. If the backend returned evidence, that evidence can still
+       * be useful.
+       */
+      var items =
+        data.items || {};
+
+      var incomplete =
+        !data.dataComplete;
+
+      var institutionName =
+        data.institutionName ||
+        (
+          institution &&
+          institution.name
+        ) ||
+        "the institution";
+
+      /* -------------------------------------------------------------------
+         PHONE
+         ------------------------------------------------------------------- */
+
+      if (
+        activeCheckType === "phone"
+      ) {
+        var phoneMatch =
+          findPhoneMatch(
+            value,
+            items.phones
+          );
+
+        if (phoneMatch) {
+          renderResult(
+            "found",
+            "🟢 Found on official source",
+            "This phone number was found on " +
+              escapeHtml(
+                institutionName
+              ) +
+              "'s official sources."
+          );
+
+          renderEvidence(
+            value,
+            "Found",
+            phoneMatch.source,
+            data.checkedAt
+          );
+        } else {
+          renderNotFoundResult(
+            data,
+            institution,
+            value,
+            "phone number"
+          );
+        }
+
+        logVerification(
+          !phoneMatch
+        );
+
+        return;
+      }
+
+      /* -------------------------------------------------------------------
+         EMAIL
+         ------------------------------------------------------------------- */
+
+      if (
+        activeCheckType === "email"
+      ) {
+        var emailMatch =
+          findEmailMatch(
+            value,
+            items.emails
+          );
+
+        if (emailMatch) {
+          renderResult(
+            "found",
+            "🟢 Found on official source",
+            "This email address was found on " +
+              escapeHtml(
+                institutionName
+              ) +
+              "'s official sources."
+          );
+
+          renderEvidence(
+            value,
+            "Found",
+            emailMatch.source,
+            data.checkedAt
+          );
+        } else {
+          renderNotFoundResult(
+            data,
+            institution,
+            value,
+            "email address"
+          );
+        }
+
+        logVerification(
+          !emailMatch
+        );
+
+        return;
+      }
+
+      /* -------------------------------------------------------------------
+         BANK / PAYMENT
+         ------------------------------------------------------------------- */
+
+      if (
+        activeCheckType === "bank"
+      ) {
+        var paymentMatch =
+          findPaymentRecordMatch(
+            value,
+            items.paymentRecords
+          );
+
+        var bankNameMatch =
+          !paymentMatch
+            ? findBankNameMatch(
+                value,
+                items.paymentRecords,
+                items.bankNames
+              )
+            : null;
+
+        /*
+         * EXACT PAYMENT RECORD
+         *
+         * This is the strongest result. It remains "Published by
+         * Institution" even if the live crawl itself was incomplete,
+         * because the actual matching evidence record was returned.
+         */
+        if (paymentMatch) {
+          renderResult(
+            "found",
+            "🟢 Published by Institution",
+            "This payment detail matches an account record publicly published on " +
+              escapeHtml(
+                institutionName
+              ) +
+              "'s official sources."
+          );
+
+          renderPaymentEvidence(
+            value,
+            paymentMatch,
+            data.checkedAt
+          );
+
+          logVerification(false);
+
+          return;
+        }
+
+        /*
+         * BANK NAME ONLY
+         */
+        if (bankNameMatch) {
+          var bankRecord =
+            unwrapRecord(
+              bankNameMatch
+            );
+
+          var bankSource =
+            (
+              bankRecord &&
+              bankRecord.source
+            ) ||
+            bankNameMatch.source ||
+            null;
+
           renderResult(
             "partial",
-            "🟡 Unable to check right now",
-            "CampusVerify couldn't reach " +
-              escapeHtml(
-                (
-                  data &&
-                  data.institutionName
-                ) ||
-                (
-                  institution &&
-                  institution.name
-                ) ||
-                "the institution"
-              ) +
-              "'s official pages at this moment. This is not a result — please try again shortly."
+            "🟡 Bank mentioned, account not confirmed",
+            escapeHtml(
+              institutionName
+            ) +
+              " publicly mentions this bank, but CampusVerify did not find the specific account number or account name you entered in its published payment records. Confirm the exact payment details directly with the institution before paying."
+          );
+
+          renderEvidence(
+            value,
+            "Bank mentioned, specific payment detail not confirmed",
+            bankSource,
+            data.checkedAt,
+            bankRecord &&
+            bankRecord.accountNumber
+              ? "<p><strong>Published account associated with this bank:</strong> " +
+                escapeHtml(
+                  bankRecord.accountNumber
+                ) +
+                "</p>"
+              : ""
           );
 
           addReportCentreButton();
+          logVerification(true);
 
           return;
         }
 
-        var items =
-          data.items || {};
+        /*
+         * NOTHING FOUND
+         */
+        renderResult(
+          incomplete
+            ? "partial"
+            : "notfound",
 
-        var incomplete =
-          !data.dataComplete;
+          incomplete
+            ? "🟡 Unable to fully verify"
+            : "🟡 Not found in published payment details",
 
-        /* -----------------------------------------------------------------
-           PHONE
-           ----------------------------------------------------------------- */
+          (
+            incomplete
+              ? "Some official pages could not be checked, so CampusVerify cannot make a complete determination. "
+              : ""
+          ) +
 
-        if (
-          activeCheckType ===
-          "phone"
-        ) {
-          var phoneMatch =
-            findPhoneMatch(
-              value,
-              items.phones
-            );
+          "CampusVerify did not find this specific payment detail in the publicly available payment information it checked on " +
+            escapeHtml(
+              institutionName
+            ) +
+            ". This does not automatically mean the account is fraudulent. Confirm directly with the institution before paying."
+        );
 
-          if (phoneMatch) {
-            renderResult(
-              "found",
-              "🟢 Found on official source",
-              "This phone number was found on " +
-                escapeHtml(
-                  data.institutionName
-                ) +
-                "'s official website."
-            );
+        renderEvidence(
+          value,
+          incomplete
+            ? "Incomplete — not all official pages were checked"
+            : "Not found in published payment details",
+          null,
+          data.checkedAt
+        );
 
-            renderEvidence(
-              value,
-              "Found",
-              phoneMatch.source,
-              data.checkedAt
-            );
-          } else {
-            renderNotFoundResult(
-              data,
-              institution,
-              value,
-              "phone number"
-            );
-          }
+        if (incomplete) {
+          addReportCentreButton();
+        }
 
-          logVerification(
-            !phoneMatch
+        logVerification(true);
+
+        return;
+      }
+
+      /* -------------------------------------------------------------------
+         LINK
+         ------------------------------------------------------------------- */
+
+      if (
+        activeCheckType === "link"
+      ) {
+        var linkMatch =
+          findLinkMatch(
+            value,
+            data.sources,
+            institution
           );
 
-          return;
-        }
-
-        /* -----------------------------------------------------------------
-           EMAIL
-           ----------------------------------------------------------------- */
-
-        if (
-          activeCheckType ===
-          "email"
-        ) {
-          var emailMatch =
-            findEmailMatch(
-              value,
-              items.emails
-            );
-
-          if (emailMatch) {
-            renderResult(
-              "found",
-              "🟢 Found on official source",
-              "This email address was found on " +
-                escapeHtml(
-                  data.institutionName
-                ) +
-                "'s official website."
-            );
-
-            renderEvidence(
-              value,
-              "Found",
-              emailMatch.source,
-              data.checkedAt
-            );
-          } else {
-            renderNotFoundResult(
-              data,
-              institution,
-              value,
-              "email address"
-            );
-          }
-
-          logVerification(
-            !emailMatch
-          );
-
-          return;
-        }
-
-        /* -----------------------------------------------------------------
-           BANK / PAYMENT
-           ----------------------------------------------------------------- */
-
-        if (
-          activeCheckType ===
-          "bank"
-        ) {
-          var paymentMatch =
-            findPaymentRecordMatch(
-              value,
-              items.paymentRecords
-            );
-
-          var bankNameMatch =
-            !paymentMatch
-              ? findBankNameMatch(
-                  value,
-                  items.paymentRecords,
-                  items.bankNames
-                )
-              : null;
-
-          if (paymentMatch) {
-            renderResult(
-              "found",
-              "🟢 Published by Institution",
-              "This payment detail matches an account record publicly published on " +
-                escapeHtml(
-                  data.institutionName
-                ) +
-                "'s official website."
-            );
-
-            renderPaymentEvidence(
-              value,
-              paymentMatch,
-              data.checkedAt
-            );
-
-            logVerification(false);
-
-            return;
-          }
-
-          if (bankNameMatch) {
-            var bankRecord =
-              unwrapRecord(
-                bankNameMatch
-              );
-
-            var bankSource =
-              (
-                bankRecord &&
-                bankRecord.source
-              ) ||
-              bankNameMatch.source ||
-              null;
-
-            renderResult(
-              "partial",
-              "🟡 Bank mentioned, account not confirmed",
+        if (linkMatch) {
+          renderResult(
+            "found",
+            "🟢 Found on official source",
+            "This matches " +
               escapeHtml(
-                data.institutionName
+                institutionName
               ) +
-                " publicly mentions this bank, but CampusVerify did not find the specific account number or account name you entered in its published payment records. Confirm the exact payment details directly with the institution before paying."
-            );
+              "'s official website or a page CampusVerify checked there."
+          );
 
-            renderEvidence(
-              value,
-              "Bank mentioned, specific payment detail not confirmed",
-              bankSource,
-              data.checkedAt,
-              bankRecord &&
-              bankRecord.accountNumber
-                ? "<p><strong>Published account associated with this bank:</strong> " +
-                  escapeHtml(
-                    bankRecord.accountNumber
-                  ) +
-                  "</p>"
-                : ""
-            );
-
-            addReportCentreButton();
-
-            logVerification(true);
-
-            return;
-          }
-
+          renderEvidence(
+            value,
+            "Found",
+            linkMatch.source,
+            data.checkedAt
+          );
+        } else {
           renderResult(
             incomplete
               ? "partial"
@@ -2128,26 +2153,26 @@
 
             incomplete
               ? "🟡 Unable to fully verify"
-              : "🟡 Not found in published payment details",
+              : "🔴 Not found on official sources",
 
             (
               incomplete
-                ? "Some official pages could not be checked, so CampusVerify cannot make a complete determination. "
+                ? "Some official pages could not be checked, so this isn't a complete result. "
                 : ""
             ) +
 
-            "CampusVerify did not find this specific payment detail in the publicly available payment information it checked on " +
+            "This doesn't match " +
               escapeHtml(
-                data.institutionName
+                institutionName
               ) +
-              ". This does not automatically mean the account is fraudulent. Confirm directly with the institution before paying."
+              "'s official domain or any page CampusVerify has checked. This isn't automatic proof it's fake — confirm directly before proceeding."
           );
 
           renderEvidence(
             value,
             incomplete
-              ? "Incomplete — not all official pages were checked"
-              : "Not found in published payment details",
+              ? "Incomplete"
+              : "Not found",
             null,
             data.checkedAt
           );
@@ -2155,87 +2180,13 @@
           if (incomplete) {
             addReportCentreButton();
           }
-
-          logVerification(true);
-
-          return;
         }
 
-        /* -----------------------------------------------------------------
-           LINK
-           ----------------------------------------------------------------- */
-
-        if (
-          activeCheckType ===
-          "link"
-        ) {
-          var linkMatch =
-            findLinkMatch(
-              value,
-              data.sources,
-              institution
-            );
-
-          if (linkMatch) {
-            renderResult(
-              "found",
-              "🟢 Found on official source",
-              "This matches " +
-                escapeHtml(
-                  data.institutionName
-                ) +
-                "'s official website or a page CampusVerify checked there."
-            );
-
-            renderEvidence(
-              value,
-              "Found",
-              linkMatch.source,
-              data.checkedAt
-            );
-          } else {
-            renderResult(
-              incomplete
-                ? "partial"
-                : "notfound",
-
-              incomplete
-                ? "🟡 Unable to fully verify"
-                : "🔴 Not found on official sources",
-
-              (
-                incomplete
-                  ? "Some official pages could not be checked, so this isn't a complete result. "
-                  : ""
-              ) +
-
-              "This doesn't match " +
-                escapeHtml(
-                  data.institutionName
-                ) +
-                "'s official domain or any page CampusVerify has checked. This isn't automatic proof it's fake — confirm directly before proceeding."
-            );
-
-            renderEvidence(
-              value,
-              incomplete
-                ? "Incomplete"
-                : "Not found",
-              null,
-              data.checkedAt
-            );
-
-            if (incomplete) {
-              addReportCentreButton();
-            }
-          }
-
-          logVerification(
-            !linkMatch
-          );
-        }
+        logVerification(
+          !linkMatch
+        );
       }
-    );
+    });
   }
 
   document.addEventListener(
@@ -2281,7 +2232,6 @@
     if (!currentInstitutionId) {
       noInstEl.hidden = false;
       bodyEl.hidden = true;
-
       return;
     }
 
@@ -2292,9 +2242,7 @@
       $("info-search");
 
     filterChips =
-      document.querySelectorAll(
-        ".chip"
-      );
+      document.querySelectorAll(".chip");
 
     infoListEl =
       $("info-list");
@@ -2305,10 +2253,7 @@
     var institution =
       getCurrentInstitution();
 
-    if (
-      nameEl &&
-      institution
-    ) {
+    if (nameEl && institution) {
       nameEl.textContent =
         institution.name;
     }
@@ -2322,340 +2267,285 @@
 
     crawlInstitution(
       currentInstitutionId
-    ).then(
-      function (data) {
-        var items = [];
+    ).then(function (data) {
+      var items = [];
+      var it = data.items || {};
 
-        var it =
-          data.items || {};
+      (it.phones || []).forEach(
+        function (p) {
+          if (!p || !p.value) {
+            return;
+          }
 
-        (
-          it.phones || []
-        ).forEach(
-          function (p) {
+          items.push({
+            type: "contact",
+            label: "Phone",
+            value: p.value,
+            source: p.source
+          });
+        }
+      );
+
+      (it.emails || []).forEach(
+        function (e) {
+          if (!e || !e.value) {
+            return;
+          }
+
+          items.push({
+            type: "contact",
+            label: "Email",
+            value: e.value,
+            source: e.source
+          });
+        }
+      );
+
+      (it.paymentRecords || []).forEach(
+        function (item) {
+          var rec =
+            unwrapRecord(item);
+
+          if (!rec) {
+            return;
+          }
+
+          var source =
+            rec.source ||
+            item.source ||
+            null;
+
+          if (rec.accountNumber) {
             items.push({
-              type: "contact",
-              label: "Phone",
-              value:
-                p.value,
-              source:
-                p.source
-            });
-          }
-        );
-
-        (
-          it.emails || []
-        ).forEach(
-          function (e) {
-            items.push({
-              type: "contact",
-              label: "Email",
-              value:
-                e.value,
-              source:
-                e.source
-            });
-          }
-        );
-
-        (
-          it.paymentRecords ||
-          []
-        ).forEach(
-          function (item) {
-            var rec =
-              unwrapRecord(
-                item
-              );
-
-            if (!rec) {
-              return;
-            }
-
-            var source =
-              rec.source ||
-              item.source ||
-              null;
-
-            if (
-              rec.accountNumber
-            ) {
-              items.push({
-                type: "bank",
-                label:
-                  "Account number",
-                value:
-                  String(
-                    rec.accountNumber
-                  ),
-                source:
-                  source
-              });
-            }
-
-            if (
-              rec.bankName
-            ) {
-              items.push({
-                type: "bank",
-                label:
-                  "Bank",
-                value:
-                  String(
-                    rec.bankName
-                  ),
-                source:
-                  source
-              });
-            }
-
-            if (
-              rec.accountName
-            ) {
-              items.push({
-                type: "bank",
-                label:
-                  "Account name",
-                value:
-                  String(
-                    rec.accountName
-                  ),
-                source:
-                  source
-              });
-            }
-
-            if (
-              rec.branch
-            ) {
-              items.push({
-                type: "bank",
-                label:
-                  "Branch",
-                value:
-                  String(
-                    rec.branch
-                  ),
-                source:
-                  source
-              });
-            }
-
-            if (
-              rec.pageTitle
-            ) {
-              items.push({
-                type: "document",
-                label:
-                  "Payment source",
-                value:
-                  String(
-                    rec.pageTitle
-                  ),
-                source:
-                  source
-              });
-            }
-          }
-        );
-
-        (
-          it.bankNames || []
-        ).forEach(
-          function (b) {
-            var bankValue =
-              String(
-                b.value || ""
-              );
-
-            if (!bankValue) {
-              return;
-            }
-
-            var alreadyListed =
-              items.some(
-                function (
-                  existing
-                ) {
-                  return (
-                    existing.type ===
-                      "bank" &&
-                    existing.label ===
-                      "Bank" &&
-                    normaliseName(
-                      existing.value
-                    ) ===
-                      normaliseName(
-                        bankValue
-                      )
-                  );
-                }
-              );
-
-            if (!alreadyListed) {
-              items.push({
-                type:
-                  "bank",
-                label:
-                  "Bank",
-                value:
-                  bankValue,
-                source:
-                  b.source
-              });
-            }
-          }
-        );
-
-        (
-          it.paymentInstructions ||
-          []
-        ).forEach(
-          function (instruction) {
-            var value =
-              instruction &&
-              instruction.value
-                ? instruction.value
-                : instruction;
-
-            if (!value) {
-              return;
-            }
-
-            items.push({
-              type:
-                "payment",
-              label:
-                "Payment instruction",
+              type: "bank",
+              label: "Account number",
               value:
                 String(
-                  value
+                  rec.accountNumber
                 ),
-              source:
-                instruction &&
-                instruction.source
-                  ? instruction.source
-                  : null
+              source: source
             });
           }
-        );
 
-        (
-          data.sources || []
-        ).forEach(
-          function (source) {
+          if (rec.bankName) {
             items.push({
-              type:
-                "link",
-              label:
-                "Official page",
+              type: "bank",
+              label: "Bank",
               value:
-                source,
-              source:
-                source
+                String(
+                  rec.bankName
+                ),
+              source: source
             });
           }
-        );
 
-        var query =
-          (
-            infoSearchInput &&
-            infoSearchInput.value
-          ) || "";
-
-        query =
-          query
-            .toLowerCase()
-            .trim();
-
-        var visible =
-          items.filter(
-            function (item) {
-              var itemValue =
+          if (rec.accountName) {
+            items.push({
+              type: "bank",
+              label: "Account name",
+              value:
                 String(
-                  item.value ||
-                    ""
-                ).toLowerCase();
-
-              var matchesFilter =
-                activeFilter ===
-                  "all" ||
-                item.type ===
-                  activeFilter;
-
-              var matchesQuery =
-                !query ||
-                itemValue.indexOf(
-                  query
-                ) !== -1;
-
-              return (
-                matchesFilter &&
-                matchesQuery
-              );
-            }
-          );
-
-        if (!items.length) {
-          infoListEl.innerHTML =
-            "<p class=\"empty-state\">" +
-            (
-              data.crawlFailed
-                ? "Could not reach this institution's official pages right now."
-                : "Nothing found on this institution's approved pages right now."
-            ) +
-            "</p>";
-
-          if (infoEmptyEl) {
-            infoEmptyEl.hidden =
-              true;
+                  rec.accountName
+                ),
+              source: source
+            });
           }
 
-          return;
-        }
+          if (rec.branch) {
+            items.push({
+              type: "bank",
+              label: "Branch",
+              value:
+                String(
+                  rec.branch
+                ),
+              source: source
+            });
+          }
 
-        if (infoEmptyEl) {
-          infoEmptyEl.hidden =
-            visible.length !== 0;
+          if (rec.pageTitle) {
+            items.push({
+              type: "document",
+              label: "Payment source",
+              value:
+                String(
+                  rec.pageTitle
+                ),
+              source: source
+            });
+          }
         }
+      );
 
-        infoListEl.innerHTML =
-          visible
-            .map(
-              function (item) {
+      (it.bankNames || []).forEach(
+        function (b) {
+          var bankValue =
+            String(
+              b && b.value
+                ? b.value
+                : ""
+            );
+
+          if (!bankValue) {
+            return;
+          }
+
+          var alreadyListed =
+            items.some(
+              function (existing) {
                 return (
-                  "<div class=\"info-card\">" +
-
-                  "<span class=\"info-card-title\">" +
-                  escapeHtml(
-                    item.label
-                  ) +
-                  "</span>" +
-
-                  "<span class=\"info-card-detail\">" +
-                  escapeHtml(
-                    item.value
-                  ) +
-                  "</span>" +
-
-                  (
-                    item.source
-                      ? "<a href=\"" +
-                        escapeHtml(
-                          item.source
-                        ) +
-                        "\" target=\"_blank\" rel=\"noopener\" class=\"info-card-source-link\">View Source</a>"
-                      : ""
-                  ) +
-
-                  "</div>"
+                  existing.type === "bank" &&
+                  existing.label === "Bank" &&
+                  normaliseName(
+                    existing.value
+                  ) ===
+                  normaliseName(
+                    bankValue
+                  )
                 );
               }
-            )
-            .join("");
+            );
+
+          if (!alreadyListed) {
+            items.push({
+              type: "bank",
+              label: "Bank",
+              value: bankValue,
+              source: b.source
+            });
+          }
+        }
+      );
+
+      (it.paymentInstructions || []).forEach(
+        function (instruction) {
+          var value =
+            instruction &&
+            instruction.value
+              ? instruction.value
+              : instruction;
+
+          if (!value) {
+            return;
+          }
+
+          items.push({
+            type: "payment",
+            label: "Payment instruction",
+            value: String(value),
+            source:
+              instruction &&
+              instruction.source
+                ? instruction.source
+                : null
+          });
+        }
+      );
+
+      (data.sources || []).forEach(
+        function (source) {
+          if (!source) {
+            return;
+          }
+
+          items.push({
+            type: "link",
+            label: "Official page",
+            value: source,
+            source: source
+          });
+        }
+      );
+
+      var query =
+        (
+          infoSearchInput &&
+          infoSearchInput.value
+        ) || "";
+
+      query =
+        query.toLowerCase().trim();
+
+      var visible =
+        items.filter(
+          function (item) {
+            var itemValue =
+              String(
+                item.value || ""
+              ).toLowerCase();
+
+            var matchesFilter =
+              activeFilter === "all" ||
+              item.type === activeFilter;
+
+            var matchesQuery =
+              !query ||
+              itemValue.indexOf(
+                query
+              ) !== -1;
+
+            return (
+              matchesFilter &&
+              matchesQuery
+            );
+          }
+        );
+
+      if (!items.length) {
+        infoListEl.innerHTML =
+          "<p class=\"empty-state\">" +
+          (
+            data.crawlFailed
+              ? "Could not reach this institution's official pages right now."
+              : "Nothing found on this institution's approved pages right now."
+          ) +
+          "</p>";
+
+        if (infoEmptyEl) {
+          infoEmptyEl.hidden = true;
+        }
+
+        return;
       }
-    );
+
+      if (infoEmptyEl) {
+        infoEmptyEl.hidden =
+          visible.length !== 0;
+      }
+
+      infoListEl.innerHTML =
+        visible
+          .map(function (item) {
+            return (
+              "<div class=\"info-card\">" +
+
+              "<span class=\"info-card-title\">" +
+              escapeHtml(
+                item.label
+              ) +
+              "</span>" +
+
+              "<span class=\"info-card-detail\">" +
+              escapeHtml(
+                item.value
+              ) +
+              "</span>" +
+
+              (
+                item.source
+                  ? "<a href=\"" +
+                    escapeHtml(
+                      item.source
+                    ) +
+                    "\" target=\"_blank\" rel=\"noopener\" class=\"info-card-source-link\">View Source</a>"
+                  : ""
+              ) +
+
+              "</div>"
+            );
+          })
+          .join("");
+    });
   }
 
   document.addEventListener(
@@ -2672,22 +2562,16 @@
       }
 
       document
-        .querySelectorAll(
-          ".chip"
-        )
+        .querySelectorAll(".chip")
         .forEach(
           function (chip) {
             chip.addEventListener(
               "click",
               function () {
                 document
-                  .querySelectorAll(
-                    ".chip"
-                  )
+                  .querySelectorAll(".chip")
                   .forEach(
-                    function (
-                      c
-                    ) {
+                    function (c) {
                       c.classList.remove(
                         "is-active"
                       );
@@ -2732,237 +2616,210 @@
   var reportClearBtn =
     $("report-clear-btn");
 
-  /* =======================================================================
-     REPORTING JSON LOADER
-     ======================================================================= */
-
-  /*
-   * Each supported institution can have its own reporting file:
-   *
-   * data/reporting/unilus.json
-   * data/reporting/zcas.json
-   * data/reporting/unza.json
-   *
-   * The loader reads the institution-specific file.
-   */
-
   function normaliseReportingData(data) {
     data = data || {};
 
     var contacts = [];
 
-    /* ---------------------------------------------------------------------
-       STANDARD CATEGORY FORMAT
+    function addContact(
+      category,
+      purpose,
+      hours,
+      type,
+      value,
+      label,
+      source
+    ) {
+      value =
+        safeText(value).trim();
 
-       Example:
+      if (!value) {
+        return;
+      }
 
-       contacts: [
-         {
-           category: "Accounts Department",
-           purpose: "...",
-           phones: [
-             {
-               number: "+260 975 884 829",
-               type: "phone"
-             }
-           ],
-           emails: [
-             "accounts@unilus.ac.zm"
-           ]
-         }
-       ]
-       --------------------------------------------------------------------- */
+      contacts.push({
+        category:
+          safeText(
+            category ||
+            "Official Contact"
+          ).trim(),
+
+        purpose:
+          safeText(
+            purpose || ""
+          ).trim(),
+
+        hours:
+          safeText(
+            hours || ""
+          ).trim(),
+
+        type:
+          type || "",
+
+        value:
+          value,
+
+        label:
+          label ||
+          (
+            type === "email"
+              ? "Email"
+              : "Phone"
+          ),
+
+        source:
+          safeText(
+            source || ""
+          ).trim()
+      });
+    }
 
     if (Array.isArray(data.contacts)) {
-      data.contacts.forEach(function (group) {
-        if (!group) {
-          return;
-        }
+      data.contacts.forEach(
+        function (group) {
+          if (!group) {
+            return;
+          }
 
-        var category =
-          safeText(
+          var category =
             group.category ||
             group.department ||
             group.group ||
             group.name ||
-            "Official Contact"
-          ).trim();
+            "Official Contact";
 
-        var purpose =
-          safeText(
-            group.purpose ||
-            ""
-          ).trim();
+          var purpose =
+            group.purpose || "";
 
-        var hours =
-          safeText(
-            group.hours ||
-            ""
-          ).trim();
+          var hours =
+            group.hours || "";
 
-        var groupSource =
-          safeText(
+          var groupSource =
             group.source ||
             group.sourceUrl ||
-            ""
-          ).trim();
+            "";
 
-        /*
-         * PHONE NUMBERS
-         */
-        if (Array.isArray(group.phones)) {
-          group.phones.forEach(function (phone) {
-            if (!phone) {
-              return;
-            }
+          if (
+            Array.isArray(
+              group.phones
+            )
+          ) {
+            group.phones.forEach(
+              function (phone) {
+                var number =
+                  typeof phone === "string"
+                    ? phone
+                    : phone &&
+                      (
+                        phone.number ||
+                        phone.value ||
+                        phone.phone
+                      );
 
-            var number =
-              typeof phone === "string"
-                ? phone
-                : (
-                    phone.number ||
-                    phone.value ||
-                    phone.phone ||
-                    ""
-                  );
-
-            number =
-              safeText(number).trim();
-
-            if (!number) {
-              return;
-            }
-
-            contacts.push({
-              category: category,
-              purpose: purpose,
-              hours: hours,
-              type: "phone",
-              value: number,
-              label: "Phone",
-              source:
-                (
-                  typeof phone === "object" &&
+                addContact(
+                  category,
+                  purpose,
+                  hours,
+                  "phone",
+                  number,
+                  "Phone",
                   (
-                    phone.source ||
-                    phone.sourceUrl
-                  )
-                ) ||
-                groupSource ||
-                ""
-            });
-          });
-        }
+                    phone &&
+                    typeof phone === "object" &&
+                    (
+                      phone.source ||
+                      phone.sourceUrl
+                    )
+                  ) ||
+                  groupSource
+                );
+              }
+            );
+          }
 
-        /*
-         * EMAIL ADDRESSES
-         */
-        if (Array.isArray(group.emails)) {
-          group.emails.forEach(function (email) {
-            if (!email) {
-              return;
-            }
+          if (
+            Array.isArray(
+              group.emails
+            )
+          ) {
+            group.emails.forEach(
+              function (email) {
+                var address =
+                  typeof email === "string"
+                    ? email
+                    : email &&
+                      (
+                        email.email ||
+                        email.value
+                      );
 
-            var address =
-              typeof email === "string"
-                ? email
-                : (
-                    email.email ||
-                    email.value ||
-                    ""
-                  );
-
-            address =
-              safeText(address).trim();
-
-            if (!address) {
-              return;
-            }
-
-            contacts.push({
-              category: category,
-              purpose: purpose,
-              hours: hours,
-              type: "email",
-              value: address,
-              label: "Email",
-              source:
-                (
-                  typeof email === "object" &&
+                addContact(
+                  category,
+                  purpose,
+                  hours,
+                  "email",
+                  address,
+                  "Email",
                   (
-                    email.source ||
-                    email.sourceUrl
-                  )
-                ) ||
-                groupSource ||
-                ""
-            });
-          });
-        }
+                    email &&
+                    typeof email === "object" &&
+                    (
+                      email.source ||
+                      email.sourceUrl
+                    )
+                  ) ||
+                  groupSource
+                );
+              }
+            );
+          }
 
-        /*
-         * ALSO SUPPORT SIMPLE DIRECT PHONE / EMAIL FIELDS.
-         */
-        if (group.phone) {
-          contacts.push({
-            category: category,
-            purpose: purpose,
-            hours: hours,
-            type: "phone",
-            value: safeText(
-              group.phone
-            ).trim(),
-            label: "Phone",
-            source: groupSource
-          });
-        }
+          if (group.phone) {
+            addContact(
+              category,
+              purpose,
+              hours,
+              "phone",
+              group.phone,
+              "Phone",
+              groupSource
+            );
+          }
 
-        if (group.email) {
-          contacts.push({
-            category: category,
-            purpose: purpose,
-            hours: hours,
-            type: "email",
-            value: safeText(
-              group.email
-            ).trim(),
-            label: "Email",
-            source: groupSource
-          });
-        }
+          if (group.email) {
+            addContact(
+              category,
+              purpose,
+              hours,
+              "email",
+              group.email,
+              "Email",
+              groupSource
+            );
+          }
 
-        /*
-         * GENERIC SINGLE VALUE.
-         */
-        if (
-          group.value &&
-          !group.phones &&
-          !group.emails &&
-          !group.phone &&
-          !group.email
-        ) {
-          contacts.push({
-            category: category,
-            purpose: purpose,
-            hours: hours,
-            type:
-              group.type ||
-              "other",
-            value: safeText(
-              group.value
-            ).trim(),
-            label:
+          if (
+            group.value &&
+            !group.phones &&
+            !group.emails &&
+            !group.phone &&
+            !group.email
+          ) {
+            addContact(
+              category,
+              purpose,
+              hours,
+              group.type || "other",
+              group.value,
               group.label ||
-              "Official Contact",
-            source: groupSource
-          });
+                "Official Contact",
+              groupSource
+            );
+          }
         }
-      });
+      );
     }
-
-    /* ---------------------------------------------------------------------
-       REPORTING CONTACTS ALTERNATIVE FORMAT
-       --------------------------------------------------------------------- */
 
     if (
       Array.isArray(
@@ -2975,213 +2832,110 @@
             return;
           }
 
-          /*
-           * If this object contains phones/emails, flatten them.
-           */
+          var category =
+            contact.category ||
+            contact.department ||
+            contact.name ||
+            "Official Contact";
+
+          var purpose =
+            contact.purpose || "";
+
+          var hours =
+            contact.hours || "";
+
+          var source =
+            contact.source ||
+            contact.sourceUrl ||
+            "";
+
           if (
             Array.isArray(
               contact.phones
-            ) ||
+            )
+          ) {
+            contact.phones.forEach(
+              function (phone) {
+                var number =
+                  typeof phone === "string"
+                    ? phone
+                    : phone &&
+                      (
+                        phone.number ||
+                        phone.value ||
+                        phone.phone
+                      );
+
+                addContact(
+                  category,
+                  purpose,
+                  hours,
+                  "phone",
+                  number,
+                  "Phone",
+                  source
+                );
+              }
+            );
+          }
+
+          if (
             Array.isArray(
               contact.emails
             )
           ) {
-            var category =
-              safeText(
-                contact.category ||
-                contact.department ||
-                contact.name ||
-                "Official Contact"
-              ).trim();
+            contact.emails.forEach(
+              function (email) {
+                var address =
+                  typeof email === "string"
+                    ? email
+                    : email &&
+                      (
+                        email.email ||
+                        email.value
+                      );
 
-            var purpose =
-              safeText(
-                contact.purpose ||
-                ""
-              ).trim();
-
-            var hours =
-              safeText(
-                contact.hours ||
-                ""
-              ).trim();
-
-            if (
-              Array.isArray(
-                contact.phones
-              )
-            ) {
-              contact.phones.forEach(
-                function (phone) {
-                  var number =
-                    typeof phone === "string"
-                      ? phone
-                      : (
-                          phone &&
-                          (
-                            phone.number ||
-                            phone.value ||
-                            phone.phone
-                          )
-                        );
-
-                  number =
-                    safeText(
-                      number
-                    ).trim();
-
-                  if (!number) {
-                    return;
-                  }
-
-                  contacts.push({
-                    category:
-                      category,
-                    purpose:
-                      purpose,
-                    hours:
-                      hours,
-                    type:
-                      "phone",
-                    value:
-                      number,
-                    label:
-                      "Phone",
-                    source:
-                      contact.source ||
-                      contact.sourceUrl ||
-                      ""
-                  });
-                }
-              );
-            }
-
-            if (
-              Array.isArray(
-                contact.emails
-              )
-            ) {
-              contact.emails.forEach(
-                function (email) {
-                  var address =
-                    typeof email === "string"
-                      ? email
-                      : (
-                          email &&
-                          (
-                            email.email ||
-                            email.value
-                          )
-                        );
-
-                  address =
-                    safeText(
-                      address
-                    ).trim();
-
-                  if (!address) {
-                    return;
-                  }
-
-                  contacts.push({
-                    category:
-                      category,
-                    purpose:
-                      purpose,
-                    hours:
-                      hours,
-                    type:
-                      "email",
-                    value:
-                      address,
-                    label:
-                      "Email",
-                    source:
-                      contact.source ||
-                      contact.sourceUrl ||
-                      ""
-                  });
-                }
-              );
-            }
-
-            return;
+                addContact(
+                  category,
+                  purpose,
+                  hours,
+                  "email",
+                  address,
+                  "Email",
+                  source
+                );
+              }
+            );
           }
 
-          /*
-           * Simple:
-           *
-           * {
-           *   category: "...",
-           *   type: "phone",
-           *   value: "..."
-           * }
-           */
-
-          var value =
-            safeText(
-              contact.value ||
-              contact.phone ||
-              contact.email ||
-              ""
-            ).trim();
-
-          if (!value) {
-            return;
-          }
-
-          contacts.push({
-            category:
-              safeText(
-                contact.category ||
-                contact.department ||
-                contact.group ||
-                contact.name ||
-                "Official Contact"
-              ).trim(),
-
-            purpose:
-              safeText(
-                contact.purpose ||
-                ""
-              ).trim(),
-
-            hours:
-              safeText(
-                contact.hours ||
-                ""
-              ).trim(),
-
-            type:
+          if (
+            !Array.isArray(
+              contact.phones
+            ) &&
+            !Array.isArray(
+              contact.emails
+            )
+          ) {
+            addContact(
+              category,
+              purpose,
+              hours,
               contact.type ||
-              contact.kind ||
-              "",
-
-            value:
-              value,
-
-            label:
+                contact.kind ||
+                "",
+              contact.value ||
+                contact.phone ||
+                contact.email ||
+                "",
               contact.label ||
-              contact.name ||
-              contact.title ||
-              (
-                contact.type === "email"
-                  ? "Email"
-                  : "Phone"
-              ),
-
-            source:
-              contact.source ||
-              contact.sourceUrl ||
-              ""
-          });
+                contact.name ||
+                contact.title,
+              source
+            );
+          }
         }
       );
     }
-
-    /* ---------------------------------------------------------------------
-       CATEGORY-BASED ALTERNATIVE FORMAT
-       --------------------------------------------------------------------- */
 
     if (
       Array.isArray(
@@ -3195,35 +2949,22 @@
           }
 
           var categoryName =
-            safeText(
-              category.category ||
-              category.name ||
-              category.title ||
-              "Official Contact"
-            ).trim();
+            category.category ||
+            category.name ||
+            category.title ||
+            "Official Contact";
 
           var purpose =
-            safeText(
-              category.purpose ||
-              ""
-            ).trim();
+            category.purpose || "";
 
           var hours =
-            safeText(
-              category.hours ||
-              ""
-            ).trim();
+            category.hours || "";
 
           var source =
-            safeText(
-              category.source ||
-              category.sourceUrl ||
-              ""
-            ).trim();
+            category.source ||
+            category.sourceUrl ||
+            "";
 
-          /*
-           * categories[].contacts
-           */
           if (
             Array.isArray(
               category.contacts
@@ -3235,55 +2976,27 @@
                   return;
                 }
 
-                var value =
-                  safeText(
-                    contact.value ||
+                addContact(
+                  categoryName,
+                  purpose ||
+                    contact.purpose,
+                  hours,
+                  contact.type || "",
+                  contact.value ||
                     contact.phone ||
                     contact.email ||
                     contact.number ||
-                    ""
-                  ).trim();
-
-                if (!value) {
-                  return;
-                }
-
-                contacts.push({
-                  category:
-                    categoryName,
-                  purpose:
-                    purpose ||
-                    safeText(
-                      contact.purpose ||
-                      ""
-                    ).trim(),
-                  hours:
-                    hours,
-                  type:
-                    contact.type ||
                     "",
-                  value:
-                    value,
-                  label:
-                    contact.label ||
-                    contact.name ||
-                    (
-                      contact.type === "email"
-                        ? "Email"
-                        : "Phone"
-                    ),
-                  source:
-                    contact.source ||
+                  contact.label ||
+                    contact.name,
+                  contact.source ||
                     contact.sourceUrl ||
                     source
-                });
+                );
               }
             );
           }
 
-          /*
-           * categories[].phones
-           */
           if (
             Array.isArray(
               category.phones
@@ -3291,50 +3004,26 @@
           ) {
             category.phones.forEach(
               function (phone) {
-                var number =
+                addContact(
+                  categoryName,
+                  purpose,
+                  hours,
+                  "phone",
                   typeof phone === "string"
                     ? phone
-                    : (
-                        phone &&
-                        (
-                          phone.number ||
-                          phone.value ||
-                          phone.phone
-                        )
-                      );
-
-                number =
-                  safeText(
-                    number
-                  ).trim();
-
-                if (!number) {
-                  return;
-                }
-
-                contacts.push({
-                  category:
-                    categoryName,
-                  purpose:
-                    purpose,
-                  hours:
-                    hours,
-                  type:
-                    "phone",
-                  value:
-                    number,
-                  label:
-                    "Phone",
-                  source:
-                    source
-                });
+                    : phone &&
+                      (
+                        phone.number ||
+                        phone.value ||
+                        phone.phone
+                      ),
+                  "Phone",
+                  source
+                );
               }
             );
           }
 
-          /*
-           * categories[].emails
-           */
           if (
             Array.isArray(
               category.emails
@@ -3342,42 +3031,21 @@
           ) {
             category.emails.forEach(
               function (email) {
-                var address =
+                addContact(
+                  categoryName,
+                  purpose,
+                  hours,
+                  "email",
                   typeof email === "string"
                     ? email
-                    : (
-                        email &&
-                        (
-                          email.email ||
-                          email.value
-                        )
-                      );
-
-                address =
-                  safeText(
-                    address
-                  ).trim();
-
-                if (!address) {
-                  return;
-                }
-
-                contacts.push({
-                  category:
-                    categoryName,
-                  purpose:
-                    purpose,
-                  hours:
-                    hours,
-                  type:
-                    "email",
-                  value:
-                    address,
-                  label:
-                    "Email",
-                  source:
-                    source
-                });
+                    : email &&
+                      (
+                        email.email ||
+                        email.value
+                      ),
+                  "Email",
+                  source
+                );
               }
             );
           }
@@ -3385,42 +3053,28 @@
       );
     }
 
-    /* ---------------------------------------------------------------------
-       WEBSITE / SOURCE INFORMATION
-       --------------------------------------------------------------------- */
-
-    var website =
-      data.website ||
-      data.officialWebsite ||
-      data.officialUrl ||
-      "";
-
-    var source =
-      data.source ||
-      data.sourceUrl ||
-      "";
-
     return {
-      contacts:
-        contacts,
+      contacts: contacts,
 
       website:
-        website,
+        data.website ||
+        data.officialWebsite ||
+        data.officialUrl ||
+        "",
 
       source:
-        source,
+        data.source ||
+        data.sourceUrl ||
+        "",
 
       sourceStatus:
-        data.sourceStatus ||
-        "",
+        data.sourceStatus || "",
 
       notes:
-        data.notes ||
-        "",
+        data.notes || "",
 
       description:
-        data.description ||
-        "",
+        data.description || "",
 
       reportingChannels:
         Array.isArray(
@@ -3485,6 +3139,7 @@
 
           return res.json();
         })
+
         .then(function (data) {
           var normalised =
             normaliseReportingData(
@@ -3501,6 +3156,7 @@
 
           return normalised;
         })
+
         .catch(function () {
           delete reportingInFlight[
             institutionId
@@ -3510,7 +3166,8 @@
             contacts: [],
             website: "",
             source: "",
-            sourceStatus: "unavailable",
+            sourceStatus:
+              "unavailable",
             notes: "",
             description: "",
             reportingChannels: []
@@ -3531,12 +3188,10 @@
   }
 
   /* =======================================================================
-     REPORTING CONTACT HELPERS
+     REPORTING CONTACTS
      ======================================================================= */
 
-  function getContactValue(
-    contact
-  ) {
+  function getContactValue(contact) {
     if (!contact) {
       return "";
     }
@@ -3551,9 +3206,7 @@
     ).trim();
   }
 
-  function getContactType(
-    contact
-  ) {
+  function getContactType(contact) {
     if (!contact) {
       return "";
     }
@@ -3581,9 +3234,7 @@
     }
 
     var value =
-      getContactValue(
-        contact
-      );
+      getContactValue(contact);
 
     if (
       /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(
@@ -3604,9 +3255,7 @@
     return explicit || "other";
   }
 
-  function getContactLabel(
-    contact
-  ) {
+  function getContactLabel(contact) {
     if (!contact) {
       return "Official contact";
     }
@@ -3620,25 +3269,24 @@
     );
   }
 
-  function getContactCategory(
-    contact
-  ) {
+  function getContactCategory(contact) {
     if (!contact) {
       return "Official Contact";
     }
 
-    return safeText(
-      contact.category ||
-      contact.department ||
-      contact.group ||
-      contact.label ||
+    return (
+      safeText(
+        contact.category ||
+        contact.department ||
+        contact.group ||
+        contact.label ||
+        "Official Contact"
+      ).trim() ||
       "Official Contact"
-    ).trim() || "Official Contact";
+    );
   }
 
-  function normalisePhoneForWhatsApp(
-    value
-  ) {
+  function normalisePhoneForWhatsApp(value) {
     var digits =
       safeText(value)
         .replace(/\D/g, "");
@@ -3647,9 +3295,6 @@
       return "";
     }
 
-    /*
-     * Convert Zambian local numbers such as 0972... to 260972...
-     */
     if (
       digits.length === 10 &&
       digits.charAt(0) === "0"
@@ -3658,20 +3303,16 @@
         digits.slice(1);
     }
 
-    /*
-     * Already international Zambian number.
-     */
     if (
       digits.indexOf("260") === 0
     ) {
       return digits;
     }
 
-    /*
-     * Do not guess the country for arbitrary future institutions.
-     */
     if (
-      safeText(value).trim().charAt(0) === "+"
+      safeText(value)
+        .trim()
+        .charAt(0) === "+"
     ) {
       return digits;
     }
@@ -3679,18 +3320,12 @@
     return "";
   }
 
-  function buildContactActions(
-    contact
-  ) {
+  function buildContactActions(contact) {
     var value =
-      getContactValue(
-        contact
-      );
+      getContactValue(contact);
 
     var type =
-      getContactType(
-        contact
-      );
+      getContactType(contact);
 
     if (!value) {
       return "";
@@ -3741,8 +3376,349 @@
     return actions;
   }
 
+  function renderReportChannels() {
+    var container =
+      $("report-channels");
+
+    if (!container) {
+      return;
+    }
+
+    var inst =
+      getCurrentInstitution();
+
+    if (!inst) {
+      container.innerHTML =
+        "<p class=\"empty-state\">Please enter the institution website first.</p>";
+
+      return;
+    }
+
+    var links =
+      Array.isArray(
+        inst.reportingLinks
+      )
+        ? inst.reportingLinks
+        : [];
+
+    container.innerHTML =
+      links
+        .map(function (l) {
+          if (!l || !l.url) {
+            return "";
+          }
+
+          return (
+            "<a class=\"info-card info-card-link\" href=\"" +
+            escapeHtml(l.url) +
+            "\" target=\"_blank\" rel=\"noopener\">" +
+            escapeHtml(
+              l.label ||
+              l.name ||
+              l.url
+            ) +
+            "</a>"
+          );
+        })
+        .join("") ||
+
+      "<p class=\"empty-state\">No external reporting channel has been configured for this institution yet.</p>";
+  }
+
+  function renderReportInstitutionContacts() {
+    var container =
+      $("report-institution-contacts");
+
+    if (!container) {
+      return;
+    }
+
+    if (!currentInstitutionId) {
+      container.innerHTML =
+        "<p class=\"empty-state\">Please enter the institution website first.</p>";
+
+      return;
+    }
+
+    container.innerHTML =
+      "<p class=\"empty-state\">Loading official reporting contacts…</p>";
+
+    var requestedInstitutionId =
+      currentInstitutionId;
+
+    loadReportingData(
+      requestedInstitutionId
+    ).then(function (reporting) {
+      if (
+        currentInstitutionId !==
+        requestedInstitutionId
+      ) {
+        return;
+      }
+
+      reporting =
+        reporting || {
+          contacts: []
+        };
+
+      var contacts =
+        Array.isArray(
+          reporting.contacts
+        )
+          ? reporting.contacts
+          : [];
+
+      if (!contacts.length) {
+        container.innerHTML =
+          "<p class=\"empty-state\">No institution-specific reporting contacts are configured yet.</p>";
+
+        return;
+      }
+
+      var groups = {};
+
+      contacts.forEach(
+        function (contact) {
+          if (!contact) {
+            return;
+          }
+
+          var value =
+            getContactValue(
+              contact
+            );
+
+          if (!value) {
+            return;
+          }
+
+          var category =
+            getContactCategory(
+              contact
+            );
+
+          if (!groups[category]) {
+            groups[category] = [];
+          }
+
+          groups[category].push(
+            contact
+          );
+        }
+      );
+
+      var categoryNames =
+        Object.keys(groups);
+
+      if (!categoryNames.length) {
+        container.innerHTML =
+          "<p class=\"empty-state\">No usable official reporting contacts are configured yet.</p>";
+
+        return;
+      }
+
+      var html =
+        "<p class=\"notice notice-soft\">" +
+        "Use the contact category that matches your issue. These details come from CampusVerify's institution-specific reporting configuration." +
+        "</p>";
+
+      categoryNames.forEach(
+        function (category) {
+          html +=
+            "<div class=\"report-contact-group\">" +
+            "<h3>" +
+            escapeHtml(
+              category
+            ) +
+            "</h3>";
+
+          groups[category].forEach(
+            function (contact) {
+              var value =
+                getContactValue(
+                  contact
+                );
+
+              var label =
+                getContactLabel(
+                  contact
+                );
+
+              var type =
+                getContactType(
+                  contact
+                );
+
+              var purpose =
+                safeText(
+                  contact.purpose ||
+                  ""
+                ).trim();
+
+              var hours =
+                safeText(
+                  contact.hours ||
+                  ""
+                ).trim();
+
+              var source =
+                safeText(
+                  contact.source ||
+                  contact.sourceUrl ||
+                  ""
+                ).trim();
+
+              html +=
+                "<div class=\"info-card report-contact-card\">" +
+
+                "<span class=\"info-card-title\">" +
+                escapeHtml(
+                  label
+                ) +
+                "</span>" +
+
+                "<span class=\"info-card-detail\">" +
+                escapeHtml(
+                  value
+                ) +
+                "</span>" +
+
+                (
+                  purpose
+                    ? "<span class=\"info-card-source\">" +
+                      escapeHtml(
+                        purpose
+                      ) +
+                      "</span>"
+                    : ""
+                ) +
+
+                (
+                  hours
+                    ? "<span class=\"info-card-source\">Hours: " +
+                      escapeHtml(
+                        hours
+                      ) +
+                      "</span>"
+                    : ""
+                ) +
+
+                (
+                  type === "phone"
+                    ? "<span class=\"info-card-source\">Official phone contact</span>"
+                    : ""
+                ) +
+
+                (
+                  type === "email"
+                    ? "<span class=\"info-card-source\">Official email contact</span>"
+                    : ""
+                ) +
+
+                "<div class=\"report-contact-actions\">" +
+
+                buildContactActions(
+                  contact
+                ) +
+
+                (
+                  source
+                    ? "<a class=\"btn btn-ghost btn-small\" href=\"" +
+                      escapeHtml(
+                        source
+                      ) +
+                      "\" target=\"_blank\" rel=\"noopener\">Source</a>"
+                    : ""
+                ) +
+
+                "<button type=\"button\" class=\"btn btn-ghost btn-small report-copy-contact\" data-copy-value=\"" +
+                escapeHtml(
+                  value
+                ) +
+                "\">Copy</button>" +
+
+                "</div>" +
+
+                "</div>";
+            }
+          );
+
+          html +=
+            "</div>";
+        }
+      );
+
+      if (
+        reporting.sourceStatus ===
+        "pending_verification"
+      ) {
+        html +=
+          "<p class=\"notice notice-soft\">" +
+          "These reporting contacts are configured for this institution but should be independently checked against the institution's current official website before being treated as authoritative." +
+          "</p>";
+      }
+
+      if (reporting.website) {
+        html +=
+          "<p>" +
+          "<a class=\"btn btn-ghost btn-small\" href=\"" +
+          escapeHtml(
+            reporting.website
+          ) +
+          "\" target=\"_blank\" rel=\"noopener\">" +
+          "Open Institution Website" +
+          "</a>" +
+          "</p>";
+      }
+
+      container.innerHTML =
+        html;
+
+      container
+        .querySelectorAll(
+          ".report-copy-contact"
+        )
+        .forEach(function (btn) {
+          btn.addEventListener(
+            "click",
+            function () {
+              var value =
+                btn.getAttribute(
+                  "data-copy-value"
+                );
+
+              if (
+                navigator.clipboard &&
+                navigator.clipboard.writeText
+              ) {
+                navigator.clipboard
+                  .writeText(value)
+                  .catch(
+                    function () {}
+                  );
+              }
+
+              var original =
+                btn.textContent;
+
+              btn.textContent =
+                "Copied!";
+
+              setTimeout(
+                function () {
+                  btn.textContent =
+                    original;
+                },
+                1500
+              );
+            }
+          );
+        });
+    });
+  }
+
   /* =======================================================================
-     REPORT TEXT
+     REPORT GENERATION
      ======================================================================= */
 
   function buildReportText() {
@@ -3854,18 +3830,9 @@
     ].join("\n");
   }
 
-  /* =======================================================================
-     GENERATE REPORT
-     ======================================================================= */
-
-  function generateReport(
-    event
-  ) {
+  function generateReport(event) {
     event.preventDefault();
 
-    /*
-     * A report must always belong to a known institution.
-     */
     if (!currentInstitutionId) {
       if (reportEmptyWarning) {
         reportEmptyWarning.textContent =
@@ -3876,7 +3843,6 @@
       }
 
       showPage("verify");
-
       return;
     }
 
@@ -4012,432 +3978,18 @@
     }
 
     if (reportSummary) {
-      reportSummary.hidden =
-        true;
+      reportSummary.hidden = true;
     }
 
     if (reportActions) {
-      reportActions.hidden =
-        true;
+      reportActions.hidden = true;
     }
 
     if (reportEmptyWarning) {
       reportEmptyWarning.hidden =
         true;
     }
-
-    /*
-     * Clearing the report does NOT clear the identified institution.
-     */
   }
-
-  /* =======================================================================
-     REPORTING CHANNELS
-     ======================================================================= */
-
-  function renderReportChannels() {
-    var container =
-      $("report-channels");
-
-    if (!container) {
-      return;
-    }
-
-    var inst =
-      getCurrentInstitution();
-
-    if (!inst) {
-      container.innerHTML =
-        "<p class=\"empty-state\">Please enter the institution website first.</p>";
-
-      return;
-    }
-
-    var links =
-      (
-        Array.isArray(
-          inst.reportingLinks
-        )
-          ? inst.reportingLinks
-          : []
-      );
-
-    container.innerHTML =
-      links
-        .map(
-          function (l) {
-            if (
-              !l ||
-              !l.url
-            ) {
-              return "";
-            }
-
-            return (
-              "<a class=\"info-card info-card-link\" href=\"" +
-              escapeHtml(
-                l.url
-              ) +
-              "\" target=\"_blank\" rel=\"noopener\">" +
-              escapeHtml(
-                l.label ||
-                l.name ||
-                l.url
-              ) +
-              "</a>"
-            );
-          }
-        )
-        .join("") ||
-
-      "<p class=\"empty-state\">No external reporting channel has been configured for this institution yet.</p>";
-  }
-
-  /* =======================================================================
-     INSTITUTION-SPECIFIC REPORTING CONTACTS
-     ======================================================================= */
-
-  function renderReportInstitutionContacts() {
-    var container =
-      $("report-institution-contacts");
-
-    if (!container) {
-      return;
-    }
-
-    if (!currentInstitutionId) {
-      container.innerHTML =
-        "<p class=\"empty-state\">Please enter the institution website first.</p>";
-
-      return;
-    }
-
-    container.innerHTML =
-      "<p class=\"empty-state\">Loading official reporting contacts…</p>";
-
-    var requestedInstitutionId =
-      currentInstitutionId;
-
-    loadReportingData(
-      requestedInstitutionId
-    ).then(
-      function (reporting) {
-        /*
-         * Prevent an old request from rendering contacts for the wrong
-         * institution if the user changes institution while loading.
-         */
-        if (
-          currentInstitutionId !==
-          requestedInstitutionId
-        ) {
-          return;
-        }
-
-        reporting =
-          reporting || {
-            contacts: []
-          };
-
-        var contacts =
-          Array.isArray(
-            reporting.contacts
-          )
-            ? reporting.contacts
-            : [];
-
-        if (!contacts.length) {
-          container.innerHTML =
-            "<p class=\"empty-state\">No institution-specific reporting contacts are configured yet.</p>";
-
-          return;
-        }
-
-        /*
-         * Group contacts by category.
-         *
-         * For your UNILUS JSON this creates:
-         *
-         * Accounts Department
-         * Admissions
-         * Undergraduate Admissions
-         * Postgraduate Admissions
-         * Customer Service / General Enquiries
-         * Leopards Hill Campus
-         * Silverest Campus
-         * Alternative Admissions Contacts
-         */
-        var groups = {};
-
-        contacts.forEach(
-          function (contact) {
-            if (!contact) {
-              return;
-            }
-
-            var value =
-              getContactValue(
-                contact
-              );
-
-            if (!value) {
-              return;
-            }
-
-            var category =
-              getContactCategory(
-                contact
-              );
-
-            if (!groups[category]) {
-              groups[category] = [];
-            }
-
-            groups[category].push(
-              contact
-            );
-          }
-        );
-
-        var categoryNames =
-          Object.keys(
-            groups
-          );
-
-        if (!categoryNames.length) {
-          container.innerHTML =
-            "<p class=\"empty-state\">No usable official reporting contacts are configured yet.</p>";
-
-          return;
-        }
-
-        var html = "";
-
-        /*
-         * Small heading explaining what these are.
-         */
-        html +=
-          "<p class=\"notice notice-soft\">" +
-          "Use the contact category that matches your issue. These details come from CampusVerify's institution-specific reporting configuration." +
-          "</p>";
-
-        categoryNames.forEach(
-          function (category) {
-            html +=
-              "<div class=\"report-contact-group\">" +
-
-              "<h3>" +
-              escapeHtml(
-                category
-              ) +
-              "</h3>";
-
-            groups[category].forEach(
-              function (contact) {
-                var value =
-                  getContactValue(
-                    contact
-                  );
-
-                var label =
-                  getContactLabel(
-                    contact
-                  );
-
-                var type =
-                  getContactType(
-                    contact
-                  );
-
-                var purpose =
-                  safeText(
-                    contact.purpose ||
-                    ""
-                  ).trim();
-
-                var hours =
-                  safeText(
-                    contact.hours ||
-                    ""
-                  ).trim();
-
-                var source =
-                  safeText(
-                    contact.source ||
-                    contact.sourceUrl ||
-                    ""
-                  ).trim();
-
-                html +=
-                  "<div class=\"info-card report-contact-card\">" +
-
-                  "<span class=\"info-card-title\">" +
-                  escapeHtml(
-                    label
-                  ) +
-                  "</span>" +
-
-                  "<span class=\"info-card-detail\">" +
-                  escapeHtml(
-                    value
-                  ) +
-                  "</span>" +
-
-                  (
-                    purpose
-                      ? "<span class=\"info-card-source\">" +
-                        escapeHtml(
-                          purpose
-                        ) +
-                        "</span>"
-                      : ""
-                  ) +
-
-                  (
-                    hours
-                      ? "<span class=\"info-card-source\">" +
-                        "Hours: " +
-                        escapeHtml(
-                          hours
-                        ) +
-                        "</span>"
-                      : ""
-                  ) +
-
-                  (
-                    type === "phone"
-                      ? "<span class=\"info-card-source\">Official phone contact</span>"
-                      : ""
-                  ) +
-
-                  (
-                    type === "email"
-                      ? "<span class=\"info-card-source\">Official email contact</span>"
-                      : ""
-                  ) +
-
-                  "<div class=\"report-contact-actions\">" +
-
-                  buildContactActions(
-                    contact
-                  ) +
-
-                  (
-                    source
-                      ? "<a class=\"btn btn-ghost btn-small\" href=\"" +
-                        escapeHtml(
-                          source
-                        ) +
-                        "\" target=\"_blank\" rel=\"noopener\">Source</a>"
-                      : ""
-                  ) +
-
-                  "<button type=\"button\" class=\"btn btn-ghost btn-small report-copy-contact\" data-copy-value=\"" +
-                  escapeHtml(
-                    value
-                  ) +
-                  "\">Copy</button>" +
-
-                  "</div>" +
-
-                  "</div>";
-              }
-            );
-
-            html +=
-              "</div>";
-          }
-        );
-
-        /*
-         * Your current UNILUS JSON intentionally says that the contacts
-         * should be independently verified before being treated as fully
-         * authoritative.
-         */
-        if (
-          reporting.sourceStatus ===
-          "pending_verification"
-        ) {
-          html +=
-            "<p class=\"notice notice-soft\">" +
-            "These reporting contacts are configured for this institution but should be independently checked against the institution's current official website before being treated as authoritative." +
-            "</p>";
-        }
-
-        /*
-         * If the JSON provides an official website, show it.
-         */
-        if (
-          reporting.website
-        ) {
-          html +=
-            "<p>" +
-            "<a class=\"btn btn-ghost btn-small\" href=\"" +
-            escapeHtml(
-              reporting.website
-            ) +
-            "\" target=\"_blank\" rel=\"noopener\">" +
-            "Open Institution Website" +
-            "</a>" +
-            "</p>";
-        }
-
-        container.innerHTML =
-          html;
-
-        /*
-         * COPY BUTTONS
-         */
-        container
-          .querySelectorAll(
-            ".report-copy-contact"
-          )
-          .forEach(
-            function (btn) {
-              btn.addEventListener(
-                "click",
-                function () {
-                  var value =
-                    btn.getAttribute(
-                      "data-copy-value"
-                    );
-
-                  if (
-                    navigator.clipboard &&
-                    navigator.clipboard.writeText
-                  ) {
-                    navigator.clipboard
-                      .writeText(
-                        value
-                      )
-                      .catch(
-                        function () {}
-                      );
-                  }
-
-                  var original =
-                    btn.textContent;
-
-                  btn.textContent =
-                    "Copied!";
-
-                  setTimeout(
-                    function () {
-                      btn.textContent =
-                        original;
-                    },
-                    1500
-                  );
-                }
-              );
-            }
-          );
-      }
-    );
-  }
-
-  /* =======================================================================
-     REPORT EVENT LISTENERS
-     ======================================================================= */
 
   if (reportForm) {
     reportForm.addEventListener(
@@ -4478,9 +4030,7 @@
     }
   }
 
-  function savePreferences(
-    prefs
-  ) {
+  function savePreferences(prefs) {
     try {
       localStorage.setItem(
         "cv-prefs",
@@ -4491,9 +4041,7 @@
     } catch (e) {}
   }
 
-  function applyPreferences(
-    prefs
-  ) {
+  function applyPreferences(prefs) {
     prefs =
       prefs || {};
 
@@ -4552,7 +4100,6 @@
       el.checked;
 
     savePreferences(p);
-
     applyPreferences(p);
   }
 
@@ -4615,13 +4162,9 @@
         resetBtn.addEventListener(
           "click",
           function () {
-            savePreferences(
-              {}
-            );
+            savePreferences({});
 
-            applyPreferences(
-              {}
-            );
+            applyPreferences({});
 
             var confirmEl =
               $("settings-reset-confirm");
@@ -4658,7 +4201,6 @@
       }
 
       renderImpactStats();
-
       applyPreferences(
         loadPreferences()
       );
@@ -4671,4 +4213,5 @@
       );
     }
   );
+
 })();
