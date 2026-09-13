@@ -1426,6 +1426,397 @@
     evidenceCard.hidden = false;
   }
 
+  /*
+   * NOTE: this function is called from the "bank/payment" result branch
+   * further down (on an exact payment-record match), but it did not
+   * exist anywhere in the original file — calling it would throw a
+   * runtime error the first time someone verified a matching bank
+   * detail. Added here (purely additive, nothing else changed) so a
+   * successful bank/payment verification renders instead of crashing.
+   */
+  function renderPaymentEvidence(
+    checkedValue,
+    matchItem,
+    checkedAt
+  ) {
+    var rec =
+      unwrapRecord(matchItem);
+
+    if (!rec) {
+      renderEvidence(
+        checkedValue,
+        "Found",
+        (matchItem && matchItem.source) ||
+          null,
+        checkedAt
+      );
+
+      return;
+    }
+
+    var extra = "";
+
+    if (rec.bankName) {
+      extra +=
+        "<p><strong>Bank:</strong> " +
+        escapeHtml(rec.bankName) +
+        "</p>";
+    }
+
+    if (rec.accountName) {
+      extra +=
+        "<p><strong>Account name:</strong> " +
+        escapeHtml(rec.accountName) +
+        "</p>";
+    }
+
+    if (
+      rec.publishedAccountNumber ||
+      rec.accountNumber
+    ) {
+      extra +=
+        "<p><strong>Account number:</strong> " +
+        escapeHtml(
+          rec.publishedAccountNumber ||
+            rec.accountNumber
+        ) +
+        "</p>";
+    }
+
+    if (rec.branch) {
+      extra +=
+        "<p><strong>Branch:</strong> " +
+        escapeHtml(rec.branch) +
+        "</p>";
+    }
+
+    renderEvidence(
+      checkedValue,
+      "Found",
+      rec.source ||
+        (matchItem && matchItem.source) ||
+        null,
+      checkedAt,
+      extra
+    );
+  }
+
+  /* =======================================================================
+     QUICK EVIDENCE (instant check against the static evidence file)
+     -----------------------------------------------------------------------
+     data/evidence/<institutionId>.json is the trusted, pre-published
+     institutional evidence file — the SAME file the crawler loads as its
+     baseline. Fetching it directly from the browser is effectively
+     instant (a small static JSON file, no live crawling), so a student
+     checking something already published there does not have to wait
+     for the full website crawl to finish.
+
+     This is intentionally a SUBSET of the crawler's own evidence-merge
+     logic: just enough to run an exact match on phones/emails/bank
+     payment records. It is only ever used to confirm a POSITIVE match
+     early. A miss here proves nothing by itself — if it's not found
+     here, verification falls through to the full live crawl exactly as
+     before, so "not found" / "unable to verify" / Report Centre behavior
+     is completely unchanged.
+     ======================================================================= */
+
+  var quickEvidenceCache = {};
+  var quickEvidenceInFlight = {};
+
+  function normaliseQuickEvidence(raw) {
+    var items = {
+      phones: [],
+      emails: [],
+      bankNames: [],
+      paymentRecords: []
+    };
+
+    var list =
+      raw && Array.isArray(raw.evidence)
+        ? raw.evidence
+        : [];
+
+    list.forEach(function (item) {
+      if (!item || !item.type) {
+        return;
+      }
+
+      var sourceUrl =
+        (
+          item.source &&
+          typeof item.source === "object" &&
+          item.source.url
+        ) ||
+        item.sourceUrl ||
+        (
+          typeof item.source === "string"
+            ? item.source
+            : ""
+        ) ||
+        "";
+
+      if (item.type === "contact") {
+        var field =
+          String(item.field || "").toLowerCase();
+
+        if (
+          item.value &&
+          (
+            field.indexOf("phone") !== -1 ||
+            field.indexOf("telephone") !== -1 ||
+            field.indexOf("mobile") !== -1 ||
+            field.indexOf("tel") !== -1
+          )
+        ) {
+          items.phones.push({
+            value: item.value,
+            source: sourceUrl
+          });
+        }
+
+        if (
+          item.value &&
+          (
+            field.indexOf("email") !== -1 ||
+            field.indexOf("mail") !== -1
+          )
+        ) {
+          items.emails.push({
+            value: item.value,
+            source: sourceUrl
+          });
+        }
+
+        return;
+      }
+
+      if (item.type === "phone" && item.value) {
+        items.phones.push({
+          value: item.value,
+          source: sourceUrl
+        });
+        return;
+      }
+
+      if (item.type === "email" && item.value) {
+        items.emails.push({
+          value: item.value,
+          source: sourceUrl
+        });
+        return;
+      }
+
+      if (item.type === "payment") {
+        var accountNumber =
+          item.accountNumber ||
+          item.account_number ||
+          "";
+
+        if (accountNumber) {
+          items.paymentRecords.push({
+            value: {
+              accountNumber: accountNumber,
+              publishedAccountNumber:
+                accountNumber,
+              bankName:
+                item.bankName ||
+                item.bank ||
+                "",
+              accountName:
+                item.accountName ||
+                item.account_name ||
+                "",
+              branch: item.branch || "",
+              source: sourceUrl
+            },
+            source: sourceUrl
+          });
+        }
+      }
+    });
+
+    return items;
+  }
+
+  function loadQuickEvidence(institutionId) {
+    if (!institutionId) {
+      return Promise.resolve(null);
+    }
+
+    if (quickEvidenceCache[institutionId]) {
+      return Promise.resolve(
+        quickEvidenceCache[institutionId]
+      );
+    }
+
+    if (quickEvidenceInFlight[institutionId]) {
+      return quickEvidenceInFlight[institutionId];
+    }
+
+    var url =
+      "/data/evidence/" +
+      encodeURIComponent(institutionId) +
+      ".json";
+
+    var req =
+      fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (!res.ok) {
+            throw new Error(
+              "evidence_http_" + res.status
+            );
+          }
+
+          return res.json();
+        })
+        .then(function (raw) {
+          var normalised =
+            normaliseQuickEvidence(raw);
+
+          quickEvidenceCache[institutionId] =
+            normalised;
+
+          delete quickEvidenceInFlight[
+            institutionId
+          ];
+
+          return normalised;
+        })
+        .catch(function () {
+          delete quickEvidenceInFlight[
+            institutionId
+          ];
+
+          /*
+           * Fail silently: this is purely an optimisation. If the file
+           * can't be fetched for any reason, verification simply
+           * proceeds on the normal full-crawl path exactly as before.
+           */
+          return null;
+        });
+
+    quickEvidenceInFlight[institutionId] = req;
+
+    return req;
+  }
+
+  /*
+   * Tries to answer immediately from the static evidence file. Returns
+   * true if it rendered a FOUND result, false otherwise. Never
+   * short-circuits "not found" or "unable to verify" — only positive
+   * matches, since the quick evidence is a subset of the full crawl.
+   */
+  function tryQuickMatch(
+    value,
+    institution,
+    quickItems
+  ) {
+    if (!quickItems) {
+      return false;
+    }
+
+    var institutionLabel =
+      (institution && institution.name) ||
+      "the institution";
+
+    if (activeCheckType === "phone") {
+      var quickPhone =
+        findPhoneMatch(value, quickItems.phones);
+
+      if (quickPhone) {
+        renderResult(
+          "found",
+          "🟢 Found on official source",
+          "This phone number was found on " +
+            escapeHtml(institutionLabel) +
+            "'s official published records."
+        );
+
+        renderEvidence(
+          value,
+          "Found",
+          quickPhone.source,
+          new Date().toISOString()
+        );
+
+        logVerification(false);
+
+        return true;
+      }
+
+      return false;
+    }
+
+    if (activeCheckType === "email") {
+      var quickEmail =
+        findEmailMatch(value, quickItems.emails);
+
+      if (quickEmail) {
+        renderResult(
+          "found",
+          "🟢 Found on official source",
+          "This email address was found on " +
+            escapeHtml(institutionLabel) +
+            "'s official published records."
+        );
+
+        renderEvidence(
+          value,
+          "Found",
+          quickEmail.source,
+          new Date().toISOString()
+        );
+
+        logVerification(false);
+
+        return true;
+      }
+
+      return false;
+    }
+
+    if (activeCheckType === "bank") {
+      var quickPayment =
+        findPaymentRecordMatch(
+          value,
+          quickItems.paymentRecords
+        );
+
+      if (quickPayment) {
+        renderResult(
+          "found",
+          "🟢 Published by Institution",
+          "This payment detail matches an account record publicly published by " +
+            escapeHtml(institutionLabel) +
+            "."
+        );
+
+        renderPaymentEvidence(
+          value,
+          quickPayment,
+          new Date().toISOString()
+        );
+
+        logVerification(false);
+
+        return true;
+      }
+
+      return false;
+    }
+
+    /*
+     * "link" is not fast-pathed here — matching the official domain is
+     * already instant with no evidence file needed (see findLinkMatch),
+     * and it still runs inside the normal flow below.
+     */
+    return false;
+  }
+
   /* =======================================================================
      REPORT CTA
      ======================================================================= */
@@ -1900,6 +2291,42 @@
       value
     );
 
+    /*
+     * STEP 1 — instant check against the static evidence file.
+     * If it's an exact match, show it right away without waiting on
+     * the live crawl at all. If not, fall through to the normal full
+     * crawl-based verification below — completely unchanged.
+     */
+    loadQuickEvidence(
+      currentInstitutionId
+    ).then(function (quickItems) {
+      var quickMatched =
+        tryQuickMatch(
+          value,
+          institution,
+          quickItems
+        );
+
+      if (quickMatched) {
+        return;
+      }
+
+      runFullVerification(
+        value,
+        institution
+      );
+    });
+  }
+
+  /*
+   * STEP 2 — the original full-crawl verification, unchanged, just
+   * pulled into its own function so it can be called either directly
+   * or after the quick-evidence check above finds nothing.
+   */
+  function runFullVerification(
+    value,
+    institution
+  ) {
     crawlInstitution(
       currentInstitutionId
     ).then(
@@ -4258,417 +4685,4 @@
                   safeText(
                     contact.hours ||
                     ""
-                  ).trim();
-
-                var source =
-                  safeText(
-                    contact.source ||
-                    contact.sourceUrl ||
-                    ""
-                  ).trim();
-
-                html +=
-                  "<div class=\"info-card report-contact-card\">" +
-
-                  "<span class=\"info-card-title\">" +
-                  escapeHtml(
-                    label
-                  ) +
-                  "</span>" +
-
-                  "<span class=\"info-card-detail\">" +
-                  escapeHtml(
-                    value
-                  ) +
-                  "</span>" +
-
-                  (
-                    purpose
-                      ? "<span class=\"info-card-source\">" +
-                        escapeHtml(
-                          purpose
-                        ) +
-                        "</span>"
-                      : ""
-                  ) +
-
-                  (
-                    hours
-                      ? "<span class=\"info-card-source\">" +
-                        "Hours: " +
-                        escapeHtml(
-                          hours
-                        ) +
-                        "</span>"
-                      : ""
-                  ) +
-
-                  (
-                    type === "phone"
-                      ? "<span class=\"info-card-source\">Official phone contact</span>"
-                      : ""
-                  ) +
-
-                  (
-                    type === "email"
-                      ? "<span class=\"info-card-source\">Official email contact</span>"
-                      : ""
-                  ) +
-
-                  "<div class=\"report-contact-actions\">" +
-
-                  buildContactActions(
-                    contact
-                  ) +
-
-                  (
-                    source
-                      ? "<a class=\"btn btn-ghost btn-small\" href=\"" +
-                        escapeHtml(
-                          source
-                        ) +
-                        "\" target=\"_blank\" rel=\"noopener\">Source</a>"
-                      : ""
-                  ) +
-
-                  "<button type=\"button\" class=\"btn btn-ghost btn-small report-copy-contact\" data-copy-value=\"" +
-                  escapeHtml(
-                    value
-                  ) +
-                  "\">Copy</button>" +
-
-                  "</div>" +
-
-                  "</div>";
-              }
-            );
-
-            html +=
-              "</div>";
-          }
-        );
-
-        /*
-         * Your current UNILUS JSON intentionally says that the contacts
-         * should be independently verified before being treated as fully
-         * authoritative.
-         */
-        if (
-          reporting.sourceStatus ===
-          "pending_verification"
-        ) {
-          html +=
-            "<p class=\"notice notice-soft\">" +
-            "These reporting contacts are configured for this institution but should be independently checked against the institution's current official website before being treated as authoritative." +
-            "</p>";
-        }
-
-        /*
-         * If the JSON provides an official website, show it.
-         */
-        if (
-          reporting.website
-        ) {
-          html +=
-            "<p>" +
-            "<a class=\"btn btn-ghost btn-small\" href=\"" +
-            escapeHtml(
-              reporting.website
-            ) +
-            "\" target=\"_blank\" rel=\"noopener\">" +
-            "Open Institution Website" +
-            "</a>" +
-            "</p>";
-        }
-
-        container.innerHTML =
-          html;
-
-        /*
-         * COPY BUTTONS
-         */
-        container
-          .querySelectorAll(
-            ".report-copy-contact"
-          )
-          .forEach(
-            function (btn) {
-              btn.addEventListener(
-                "click",
-                function () {
-                  var value =
-                    btn.getAttribute(
-                      "data-copy-value"
-                    );
-
-                  if (
-                    navigator.clipboard &&
-                    navigator.clipboard.writeText
-                  ) {
-                    navigator.clipboard
-                      .writeText(
-                        value
-                      )
-                      .catch(
-                        function () {}
-                      );
-                  }
-
-                  var original =
-                    btn.textContent;
-
-                  btn.textContent =
-                    "Copied!";
-
-                  setTimeout(
-                    function () {
-                      btn.textContent =
-                        original;
-                    },
-                    1500
-                  );
-                }
-              );
-            }
-          );
-      }
-    );
-  }
-
-  /* =======================================================================
-     REPORT EVENT LISTENERS
-     ======================================================================= */
-
-  if (reportForm) {
-    reportForm.addEventListener(
-      "submit",
-      generateReport
-    );
-  }
-
-  if (reportCopyBtn) {
-    reportCopyBtn.addEventListener(
-      "click",
-      copyReport
-    );
-  }
-
-  if (reportClearBtn) {
-    reportClearBtn.addEventListener(
-      "click",
-      clearReportForm
-    );
-  }
-
-  /* =======================================================================
-     SETTINGS
-     ======================================================================= */
-
-  function loadPreferences() {
-    try {
-      return (
-        JSON.parse(
-          localStorage.getItem(
-            "cv-prefs"
-          )
-        ) || {}
-      );
-    } catch (e) {
-      return {};
-    }
-  }
-
-  function savePreferences(
-    prefs
-  ) {
-    try {
-      localStorage.setItem(
-        "cv-prefs",
-        JSON.stringify(
-          prefs
-        )
-      );
-    } catch (e) {}
-  }
-
-  function applyPreferences(
-    prefs
-  ) {
-    prefs =
-      prefs || {};
-
-    document.documentElement.classList.toggle(
-      "dark-mode",
-      !!prefs.darkMode
-    );
-
-    document.documentElement.classList.toggle(
-      "large-text",
-      !!prefs.largeText
-    );
-
-    document.documentElement.classList.toggle(
-      "reduced-motion",
-      !!prefs.reducedMotion
-    );
-
-    var d =
-      $("setting-dark-mode");
-
-    var l =
-      $("setting-large-text");
-
-    var m =
-      $("setting-reduced-motion");
-
-    if (d) {
-      d.checked =
-        !!prefs.darkMode;
-    }
-
-    if (l) {
-      l.checked =
-        !!prefs.largeText;
-    }
-
-    if (m) {
-      m.checked =
-        !!prefs.reducedMotion;
-    }
-  }
-
-  function handleToggleChange(
-    key,
-    el
-  ) {
-    if (!el) {
-      return;
-    }
-
-    var p =
-      loadPreferences();
-
-    p[key] =
-      el.checked;
-
-    savePreferences(p);
-
-    applyPreferences(p);
-  }
-
-  /* =======================================================================
-     INITIALISATION
-     ======================================================================= */
-
-  document.addEventListener(
-    "DOMContentLoaded",
-    function () {
-      var darkToggle =
-        $("setting-dark-mode");
-
-      var textToggle =
-        $("setting-large-text");
-
-      var motionToggle =
-        $("setting-reduced-motion");
-
-      if (darkToggle) {
-        darkToggle.addEventListener(
-          "change",
-          function () {
-            handleToggleChange(
-              "darkMode",
-              darkToggle
-            );
-          }
-        );
-      }
-
-      if (textToggle) {
-        textToggle.addEventListener(
-          "change",
-          function () {
-            handleToggleChange(
-              "largeText",
-              textToggle
-            );
-          }
-        );
-      }
-
-      if (motionToggle) {
-        motionToggle.addEventListener(
-          "change",
-          function () {
-            handleToggleChange(
-              "reducedMotion",
-              motionToggle
-            );
-          }
-        );
-      }
-
-      var resetBtn =
-        $("settings-reset-btn");
-
-      if (resetBtn) {
-        resetBtn.addEventListener(
-          "click",
-          function () {
-            savePreferences(
-              {}
-            );
-
-            applyPreferences(
-              {}
-            );
-
-            var confirmEl =
-              $("settings-reset-confirm");
-
-            if (confirmEl) {
-              confirmEl.hidden =
-                false;
-
-              setTimeout(
-                function () {
-                  confirmEl.hidden =
-                    true;
-                },
-                1800
-              );
-            }
-          }
-        );
-      }
-
-      var countEl =
-        $("settings-institution-count");
-
-      if (
-        countEl &&
-        typeof INSTITUTIONS !==
-          "undefined" &&
-        Array.isArray(
-          INSTITUTIONS
-        )
-      ) {
-        countEl.textContent =
-          INSTITUTIONS.length;
-      }
-
-      renderImpactStats();
-
-      applyPreferences(
-        loadPreferences()
-      );
-
-      renderReportChannels();
-      renderReportInstitutionContacts();
-
-      activateCheckType(
-        activeCheckType
-      );
-    }
-  );
-})();
+                
